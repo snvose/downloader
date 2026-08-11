@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from bot.cookie_health import classify_cookie_error
+from bot.cookie_health import classify_cookie_error, error_platform_hint
 from bot.live_guard import probe_is_live
 from bot.queue_events import cookie_event, log_event, progress_event
 from bot.utils import platform_name
@@ -24,10 +24,12 @@ from .cobalt import CobaltClient, CobaltError, CobaltUnavailable, platform_suppo
 from .sources import SourcePriority
 from .ytdlp import (
     LiveStreamError,
+    _clear_partial_files as _clear_partial,
     _download_with_gallery_dl,
     _is_spotify_url,
     collect_files,
     download_with_ytdlp,
+    short_error,
 )
 
 
@@ -178,7 +180,7 @@ def download_media(
             raise  # canlı yayın: sıradaki kaynağa geçme
 
         except Exception as exc:
-            message = str(exc)[-300:]
+            message = short_error(exc)
             errors.append(f"{source}: {message}")
             queue.put(log_event(job_id, "warning", f"Kaynak başarısız [{source}]: {message}"))
 
@@ -193,9 +195,13 @@ def download_media(
     combined = " | ".join(errors)
     cookie_reason = classify_cookie_error(combined)
     if cookie_reason:
+        # Cookie'si sorunlu olan platform, linkin platformu olmayabilir:
+        # Spotify indirmeleri YouTube araması üzerinden yürür. Hatanın
+        # kendisi hangi platformu işaret ediyorsa o raporlanır.
+        cookie_platform = error_platform_hint(combined) or platform
         queue.put(cookie_event(
             job_id=job_id,
-            platform=platform,
+            platform=cookie_platform,
             reason=cookie_reason,
             url=url,
             error=combined[-400:],
@@ -204,17 +210,5 @@ def download_media(
     raise RuntimeError("İndirme başarısız. Denemeler: " + " | ".join(errors[-5:]))
 
 
-def _clear_partial(download_dir: Path) -> None:
-    """Başarısız denemeden kalan dosyaları siler."""
-    try:
-        for item in download_dir.iterdir():
-            try:
-                if item.is_file():
-                    item.unlink()
-                else:
-                    import shutil
-                    shutil.rmtree(item, ignore_errors=True)
-            except OSError:
-                pass
-    except OSError:
-        pass
+# _clear_partial artık .ytdlp içinde tanımlı (yukarıda import ediliyor);
+# iki dosyada birebir aynı gövde duruyordu.

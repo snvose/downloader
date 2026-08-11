@@ -64,6 +64,39 @@ _OPTIONAL_COOKIE_PLATFORMS = {
 EXPIRY_WARN_DAYS = 7
 
 
+# Hata metnindeki extractor/alan adı izlerinden gerçek platformu çıkarmak
+# için kullanılır. Bir platformun indirmesi başka bir platform üzerinden
+# yürüyebilir (Spotify -> YouTube araması gibi); bu durumda yenilenmesi
+# gereken cookie, linkin platformununki DEĞİLDİR.
+_ERROR_PLATFORM_MARKERS = [
+    (r"\[youtube(:search)?\]|youtube\.com|ytsearch", "YouTube"),
+    (r"\[instagram\]|instagram\.com", "Instagram"),
+    (r"\[tiktok\]|tiktok\.com", "TikTok"),
+    (r"\[facebook\]|facebook\.com", "Facebook"),
+    (r"\[twitter\]|\[x\]|twitter\.com|(?<!\w)x\.com", "X/Twitter"),
+    (r"\[reddit\]|reddit\.com", "Reddit"),
+    (r"\[pinterest\]|pinterest\.com", "Pinterest"),
+]
+
+
+def error_platform_hint(message: str) -> str | None:
+    """
+    Hata mesajının hangi platformun cookie'sine işaret ettiğini döndürür.
+
+    Spotify indirmeleri YouTube araması üzerinden yürüdüğü için, hata
+    "Spotify" işi altında gelse bile yenilenmesi gereken cookie YouTube'un
+    olabilir. Bu ayrım yapılmazsa admin paneli yanlış platformu işaret eder.
+    """
+    if not message:
+        return None
+
+    lowered = str(message).lower()
+    for pattern, platform in _ERROR_PLATFORM_MARKERS:
+        if re.search(pattern, lowered):
+            return platform
+    return None
+
+
 def classify_cookie_error(message: str) -> str | None:
     """
     Hata mesajı cookie kaynaklı mı? Değilse None, ise okunur sebep döner.

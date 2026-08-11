@@ -377,6 +377,55 @@ def _is_tiktok_url(url: str) -> bool:
     return "tiktok" in host
 
 
+# yt-dlp hata mesajlarının sonuna eklediği, teşhis için değeri olmayan
+# yönlendirme metinleri. Mesaj kısaltılırken bunlar atılır.
+_ERROR_BOILERPLATE = re.compile(
+    r"\s*(?:Use --cookies-from-browser|Use --cookies |\. Also see |"
+    r"For tips on how to effectively export|"
+    r"for how to manually pass cookies|"
+    r"for tips on effectively exporting YouTube cookies|"
+    r"https://github\.com/yt-dlp/yt-dlp/wiki)"
+    r".*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def short_error(error: Any, limit: int = 300) -> str:
+    """
+    Hata mesajını teşhis edilebilir biçimde kısaltır.
+
+    Mesajı SONDAN değil BAŞTAN keser. yt-dlp'nin YouTube hatalarında asıl
+    sebep ("Sign in to confirm you're not a bot") en başta, wiki linki
+    içeren yönlendirme metni ise en sonda durur; sondan kesmek tam olarak
+    işe yarayan kısmı atıp geriye yalnızca boilerplate bırakıyordu.
+    """
+    text = " ".join(str(error or "").split())
+    text = _ERROR_BOILERPLATE.sub("", text).strip(" .")
+    if not text:
+        text = " ".join(str(error or "").split())[:limit]
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _clear_partial_files(download_dir: Path) -> None:
+    """
+    Başarısız denemeden kalan dosyaları siler.
+
+    Yarım kalan .part/.ytdl dosyaları sıradaki denemenin sonucuna
+    karışmasın diye her başarısız denemeden sonra çağrılır.
+    """
+    try:
+        for item in Path(download_dir).iterdir():
+            try:
+                if item.is_file():
+                    item.unlink()
+                else:
+                    shutil.rmtree(item, ignore_errors=True)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def _should_retry_without_cookies(error: Exception) -> bool:
     msg = str(error).lower()
     markers = [
@@ -687,25 +736,47 @@ def download_with_ytdlp(
         search_url = "ytsearch1:" + query
         # Spotify her zaman ses olarak indirilir.
         spotify_mode = mode if _is_audio_mode(mode) else "audio_best"
-        try:
-            files, title, info = _try_ytdlp_once(
-                job_id=job_id,
-                url=search_url,
-                download_dir=download_dir,
-                queue=queue,
-                cookies_file=cookies_file,
-                mode=spotify_mode,
-                use_cookies=False,
-                format_profile="normal",
-            )
-            # Kaynak olarak orijinal Spotify linkini koru.
-            info["platform"] = "Spotify"
-            info["webpage_url"] = url
-            return files, (title or query), info
-        except Exception as exc:
-            raise RuntimeError(
-                "Spotify şarkısı YouTube üzerinden indirilemedi: " + str(exc)[-200:]
-            )
+
+        # Arama YouTube'a gider. Sıra kasıtlı olarak ÖNCE cookie'siz:
+        #   • cookie'siz  -> android istemcisi, DASH ses (bu şarkıda 3.2 MB)
+        #   • cookie'li   -> tv istemcisi, yalnızca HLS (aynı şarkı 37 MB)
+        # Yani cookie'li deneme hem daha yavaş hem ~10x daha fazla trafik.
+        # Ama cookie'siz deneme YouTube "Sign in to confirm you're not a bot"
+        # dediğinde (VDS IP'sinde sık) başarısız oluyor; önceden TEK yol
+        # oydu ve o anda Spotify tamamen kullanılamaz hale geliyordu.
+        # Bu yüzden cookie'li deneme ucuz yol tıkandığında devreye giren
+        # yedek olarak duruyor.
+        spotify_errors: list[str] = []
+        for label, use_cookies in (("cookieless", False), ("cookies", True)):
+            try:
+                files, title, info = _try_ytdlp_once(
+                    job_id=job_id,
+                    url=search_url,
+                    download_dir=download_dir,
+                    queue=queue,
+                    cookies_file=cookies_file,
+                    mode=spotify_mode,
+                    use_cookies=use_cookies,
+                    format_profile="normal",
+                )
+                # Kaynak olarak orijinal Spotify linkini koru.
+                info["platform"] = "Spotify"
+                info["webpage_url"] = url
+                return files, (title or query), info
+
+            except Exception as exc:
+                message = short_error(exc)
+                spotify_errors.append(f"{label}: {message}")
+                queue.put(log_event(
+                    job_id, "warning",
+                    f"Spotify -> YouTube denemesi başarısız [{label}]: {message}",
+                ))
+                _clear_partial_files(download_dir)
+
+        raise RuntimeError(
+            "Spotify şarkısı YouTube üzerinden indirilemedi — "
+            + " | ".join(spotify_errors)
+        )
 
     if _is_thumbnail_mode(mode):
         attempts = [
@@ -751,8 +822,9 @@ def download_with_ytdlp(
             raise
 
         except Exception as exc:
-            errors.append(f"{label}: {str(exc)[-300:]}")
-            queue.put(log_event(job_id, "warning", f"yt-dlp başarısız [{label}]: {str(exc)[-350:]}"))
+            message = short_error(exc)
+            errors.append(f"{label}: {message}")
+            queue.put(log_event(job_id, "warning", f"yt-dlp başarısız [{label}]: {message}"))
 
             if not _should_retry_without_cookies(exc) and not _is_social_url(url):
                 break
@@ -772,6 +844,6 @@ def download_with_ytdlp(
                 queue=queue,
             )
         except Exception as exc:
-            errors.append(f"gallery-dl: {str(exc)[-300:]}")
+            errors.append(f"gallery-dl: {short_error(exc)}")
 
     raise RuntimeError("İndirme başarısız. Denemeler: " + " | ".join(errors[-5:]))
