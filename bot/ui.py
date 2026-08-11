@@ -43,50 +43,47 @@ def human_duration(seconds: Any) -> str:
         return t("unknown")
 
 
+# Platform adı → emoji slot anahtarı.
+# Tek kaynak: hem medya altındaki ikon hem /help listesi bunu kullanır,
+# yani admin bir slota premium emoji atadığında iki yerde birden değişir.
+PLATFORM_SLOTS: list[tuple[str, str]] = [
+    ("YouTube", "icon_youtube"),
+    ("YouTube Music", "icon_ytmusic"),
+    ("Instagram", "icon_instagram"),
+    ("TikTok", "icon_tiktok"),
+    ("X/Twitter", "icon_twitter"),
+    ("Facebook", "icon_facebook"),
+    ("Reddit", "icon_reddit"),
+    ("Pinterest", "icon_pinterest"),
+    ("Spotify", "icon_spotify"),
+    ("SoundCloud", "icon_soundcloud"),
+    ("Vimeo", "icon_vimeo"),
+    ("Dailymotion", "icon_dailymotion"),
+    ("Twitch", "icon_twitch"),
+    ("Bluesky", "icon_bluesky"),
+    ("Tumblr", "icon_tumblr"),
+    ("Snapchat", "icon_snapchat"),
+    ("VK", "icon_vk"),
+    ("Rutube", "icon_rutube"),
+    ("Bilibili", "icon_bilibili"),
+    ("Rumble", "icon_rumble"),
+    ("Streamable", "icon_streamable"),
+    ("Imgur", "icon_imgur"),
+    ("Bandcamp", "icon_bandcamp"),
+    ("Mixcloud", "icon_mixcloud"),
+    ("Newgrounds", "icon_newgrounds"),
+    ("Loom", "icon_loom"),
+    ("OK.ru", "icon_okru"),
+    ("Kick", "icon_kick"),
+]
+
+_PLATFORM_SLOT_MAP = dict(PLATFORM_SLOTS)
+
+
 def platform_icon(platform: str) -> str:
-    """
-    Medya altında gösterilen platform ikonu.
-
-    İlk gruptakiler premium emoji slotu olan platformlardır (admin
-    /admin → Emoji ile değiştirebilir). Faz 2'de eklenen platformların
-    slotu yok; onlar için sabit emoji kullanılır — önceden hepsi genel
-    link ikonuna düşüyordu ve hangi platform olduğu belli olmuyordu.
-    """
-    slotted = {
-        "YouTube": "icon_youtube",
-        "YouTube Music": "icon_ytmusic",
-        "Instagram": "icon_instagram",
-        "TikTok": "icon_tiktok",
-        "Facebook": "icon_facebook",
-        "X/Twitter": "icon_twitter",
-        "Reddit": "icon_reddit",
-        "Pinterest": "icon_pinterest",
-        "Spotify": "icon_spotify",
-    }
-    if platform in slotted:
-        return em(slotted[platform])
-
-    return {
-        "SoundCloud": "🔊",
-        "Vimeo": "🎬",
-        "Dailymotion": "🎞",
-        "Twitch": "🎮",
-        "Bluesky": "🦋",
-        "Tumblr": "📝",
-        "VK": "🇷🇺",
-        "Streamable": "🎥",
-        "Rutube": "🇷🇺",
-        "Bilibili": "🇨🇳",
-        "Imgur": "🖼",
-        "Bandcamp": "🎸",
-        "Mixcloud": "🎚",
-        "Rumble": "▶️",
-        "Newgrounds": "🎨",
-        "Loom": "💼",
-        "OK.ru": "🟠",
-        "Snapchat": "👻",
-        "Kick": "🥊",
-    }.get(platform, em("icon_link"))
+    """Medya altında gösterilen platform ikonu (premium emoji atanabilir)."""
+    key = _PLATFORM_SLOT_MAP.get(platform)
+    return em(key) if key else em("icon_link")
 
 
 def start_text(bot_name: str) -> str:
@@ -104,38 +101,18 @@ def help_text() -> str:
     Yeni platform eklenirse SUPPORTED_DOMAINS ile birlikte burası da
     güncellenmelidir.
     """
+    platforms = "\n".join(
+        f"{em(key)} {name}" for name, key in PLATFORM_SLOTS
+    )
+
     return (
         f"<b>{em('menu_help')} {t('help_title')}</b>\n\n"
-        f"{t('help_intro')}\n\n"
-
-        f"<b>{t('help_group_video')}</b>\n"
-        f"{em('icon_youtube')} YouTube · {em('icon_instagram')} Instagram · "
-        f"{em('icon_tiktok')} TikTok\n"
-        f"{em('icon_facebook')} Facebook · {em('icon_twitter')} X/Twitter · "
-        f"{em('icon_reddit')} Reddit\n"
-        f"{em('icon_pinterest')} Pinterest · 🎬 Vimeo · 🎞 Dailymotion\n"
-        f"🎮 Twitch · 🦋 Bluesky · 📝 Tumblr · 👻 Snapchat\n"
-        f"🇷🇺 VK · 🇷🇺 Rutube · 🇨🇳 Bilibili · ▶️ Rumble\n"
-        f"🎥 Streamable · 🖼 Imgur · 🎨 Newgrounds · 💼 Loom\n"
-        f"🟠 OK.ru · 🥊 Kick\n\n"
-
-        f"<b>{t('help_group_audio')}</b>\n"
-        f"{em('icon_ytmusic')} YouTube Music · {em('icon_spotify')} Spotify\n"
-        f"🔊 SoundCloud · 🎸 Bandcamp · 🎚 Mixcloud\n\n"
-
-        f"<b>{t('help_group_features')}</b>\n"
-        f"🎬 {t('help_feat_quality')}\n"
-        f"🎧 {t('help_feat_audio')}\n"
-        f"🔤 {t('help_feat_subtitle')}\n"
-        f"📁 {t('help_feat_playlist')}\n\n"
-
+        f"<b>{t('help_platforms')}</b>\n"
+        f"{platforms}\n\n"
         f"<b>{t('help_commands')}</b>\n"
-        f"<code>/ses link</code> — {t('help_ses')}\n"
+        f"<code>/ses</code> — {t('help_ses')}\n"
         f"<code>/cancel</code> — {t('help_cancel')}\n"
-        f"<code>/duyurular</code> — {t('help_duyurular')}\n\n"
-
-        f"{em('icon_spotify')} {t('help_spotify')}\n"
-        f"🔴 {t('help_no_live')}"
+        f"<code>/duyurular</code> — {t('help_duyurular')}"
     )
 
 
