@@ -36,7 +36,15 @@ _COOKIE_ERROR_PATTERNS = [
     (r"http error 401", "yetkisiz (401)"),
     (r"http error 403|403: forbidden", "erişim reddedildi (403)"),
     (r"age.?restricted|confirm your age", "yaş kısıtlaması"),
-    (r"cookies", "cookie hatası"),
+    # DİKKAT: burada yalnızca "cookies" aramak yanlış pozitif üretiyordu.
+    # Toplu hata mesajında deneme ETİKETLERİ de duruyor ("cookies: ERROR: ...",
+    # "cookies-loose: ..."); çıplak kalıp bu etiketi yakalayıp cookie ile hiç
+    # ilgisi olmayan her başarısızlığı "cookie hatası" diye raporluyordu.
+    # Örnek: TikTok slayt gönderisi "Unsupported URL" ile düşüyor, panel ise
+    # "TikTok cookie'sini yenile" diyordu.
+    (r"--cookies|cookies? (?:are |is )?(?:no longer valid|invalid|expired|"
+     r"rejected|required)|invalid cookies?|cookies? (?:have )?expired",
+     "cookie hatası"),
     (r"unable to download webpage.*(login|auth)", "oturum sorunu"),
     (r"rate.?limit|too many requests", "oran sınırı (oturum yenilenmeli)"),
     (r"empty media response", "boş yanıt (oturum düşmüş olabilir)"),
