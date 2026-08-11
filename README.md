@@ -61,6 +61,15 @@ indirme başlatılmadan reddedilir.
 - **Doğru ses metadata'sı** — başlık, sanatçı, albüm sanatçısı, albüm, yayın
   yılı ve tür kaynaktan okunup dosyaya yazılır (mutagen ID3/MP4). Kapak
   resmi kareye kırpılıp gömülür. Kaynakta olmayan alan boş bırakılır.
+- **Duyuru sistemi** — panelden toplu mesaj; hedef kitle seçimi, canlı
+  ilerleme, özet rapor. Botu engelleyenler işaretlenip sonraki duyuruda
+  atlanır. Kullanıcı `/duyurular` ile kapatabilir.
+- **Analitik panosu** — DAU/WAU/MAU, 7 günlük eğilim grafiği, platform ve
+  kaynak dağılımı, en aktif kullanıcılar. Aktivite yazımı tamponlanır
+  (her mesajda disk yazımı yok).
+- **Kullanıcı arama + ban yönetimi** — panelden kullanıcı adı/ID/başlık ile
+  arama, profil görüntüleme, ban ve canlı yayın banı yönetimi.
+- **Log görüntüleyici** — 4 kanal, seviye süzgeci, ham dosya indirme.
 - **Cookie sağlık paneli** — `/admin → 🍪 Cookie`: platform bazında çerez
   durumu (geçerli / yakında bitiyor / süresi dolmuş / eksik), kalan gün ve o
   platformda cookie yüzünden başarısız olan istek sayısı. Cookie kaynaklı
@@ -219,16 +228,20 @@ ve yeniden başlatmada korunur.
 
 ## Yönetici Paneli (`/admin`)
 
-Tek bir buton arayüzünden tüm yönetim:
+| Ekran | İçerik |
+|-------|--------|
+| Ana panel | Mod (normal/safe/bakım), başlat/durdur, aktif indirme sayacı |
+| 📈 Analitik | DAU/WAU/MAU, 7 günlük eğilim, platform/kaynak dağılımı, başarı oranı |
+| 🏆 En Aktif | En çok indirme yapan kullanıcılar |
+| 💬 Kullanım | Sohbet/grup kullanım listesi (sayfalı) |
+| 🚫 Banlar | Ban listesi + kullanıcı arama → profil → ban yönetimi |
+| 🍪 Cookie | Platform bazlı çerez durumu, kalan gün, hata sayacı, hata kaydı |
+| 📣 Duyuru | Hedef seçimi, mesaj yazma, önizleme, gönderim, özet rapor |
+| 📜 Log | Canlı akış / bot.log / downloads.log / cookie_errors.log + süzgeç |
+| 🎨 Emoji | Premium emoji slot yönetimi (nerede göründüğü açıklamalı) |
+| 🖥 Sistem | Sürümler, ffmpeg/gallery-dl durumu, sınırlar |
 
-- **Mod** — Normal / Safe / Bakım arasında geçiş.
-- **Başlat / Durdur** — botu tek dokunuşla duraklat veya çalıştır.
-- **🌐 Dil** — kullanıcı mesajlarının dilini değiştir (anında uygulanır, kalıcı).
-- **📊 İstatistik** — toplam/başarısız/iptal indirme ve platform dağılımı.
-- **🖥 Sistem** — Local Bot API, aktif indirme, Python/yt-dlp/ffmpeg durumu.
-- **💬 Kullanım** — botun kullanıldığı tüm sohbet ve gruplar (id, tür, indirme
-  sayısı, son aktivite), sayfalı liste.
-- **🧹 İşleri Temizle** — tüm aktif indirmeleri ve bekleyen menüleri iptal et.
+Geri dönüşü olmayan işlemler (işleri temizle, tümünü sıfırla, ban) onay ister.
 
 ## Dil
 
