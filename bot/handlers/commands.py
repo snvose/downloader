@@ -186,21 +186,18 @@ async def ses_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
 
     # Kullanıcı/sohbet kaydı (duyuru listesi + analitik) — link akışıyla aynı.
-    db = bot_data.get("db")
-    if db:
-        import asyncio as _asyncio
+    activity = bot_data.get("activity_buffer")
+    if activity:
         try:
-            await _asyncio.to_thread(
-                db.touch_user, user.id,
-                username=user.username, first_name=user.first_name,
-                language=user.language_code,
+            await activity.touch_user(
+                user.id, username=user.username,
+                first_name=user.first_name, language=user.language_code,
             )
-            await _asyncio.to_thread(
-                db.touch_chat, chat.id,
-                title=getattr(chat, "title", None) or "", chat_type=chat.type,
+            await activity.touch_chat(
+                chat.id, title=getattr(chat, "title", None) or "", chat_type=chat.type,
             )
         except Exception:
-            logger.exception("DB kullanıcı kaydı başarısız (/ses)")
+            logger.exception("Aktivite kaydı başarısız (/ses)")
 
     # Bakım modu: indirme yapılmaz, sabit mesaj döner (admin hariç).
     if state.is_maintenance() and not is_admin:

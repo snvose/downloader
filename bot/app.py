@@ -42,6 +42,7 @@ from .utils import safe_public_error
 # YENİ modüller: cache, chat takibi, mod yönetimi, temizlik, loglama, bildirim
 from .cache import MediaCache
 from .chats import ChatRegistry
+from .analytics import ActivityBuffer, activity_flusher
 from .cookie_health import CookieLog
 from .db import Database
 from .db_migrate import migrate_json_to_db
@@ -523,9 +524,15 @@ async def post_init(app: Application) -> None:
         )
         logger.info("Temizlik zamanlayıcı başlatıldı.")
 
+    # Aktivite tamponu: her mesajda DB'ye yazmak yerine periyodik toplu yazım.
+    buffer = app.bot_data.get("activity_buffer")
+    if buffer:
+        app.bot_data["activity_task"] = asyncio.create_task(activity_flusher(buffer))
+        logger.info("Aktivite tamponu başlatıldı.")
+
 
 async def post_shutdown(app: Application) -> None:
-    for task_key in ("queue_task", "cleanup_task"):
+    for task_key in ("queue_task", "cleanup_task", "activity_task"):
         task = app.bot_data.get(task_key)
         if task:
             task.cancel()
@@ -565,6 +572,7 @@ def build_application(config: Config) -> Application:
     app.bot_data["bot_state"] = BotState(config.data_dir)
     app.bot_data["db"] = Database(config.db_path)
     app.bot_data["cookie_log"] = CookieLog(config.data_dir, config.log_dir)
+    app.bot_data["activity_buffer"] = ActivityBuffer(app.bot_data["db"])
     app.bot_data["live_guard"] = LiveGuard(
         config.data_dir,
         strike_limit=config.live_strike_limit,

@@ -11,6 +11,7 @@ import yt_dlp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationHandlerStop, ContextTypes
 
+from bot import analytics
 from bot.broadcast import BroadcastJob, run_broadcast
 from bot.i18n import LANGUAGES, set_language
 from bot.cookie_health import platform_cookie_status
@@ -215,7 +216,7 @@ def _panel_keyboard(state) -> InlineKeyboardMarkup:
         )],
         [
             InlineKeyboardButton("🌐 Dil", callback_data="admin|langmenu"),
-            InlineKeyboardButton("📊 İstatistik", callback_data="admin|stats"),
+            InlineKeyboardButton("📈 Analitik", callback_data="admin|analytics"),
             InlineKeyboardButton("🖥 Sistem", callback_data="admin|status"),
         ],
         [
@@ -248,7 +249,11 @@ def _panel_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     state = context.application.bot_data["bot_state"]
     manager = context.application.bot_data["process_manager"]
     config = context.application.bot_data["config"]
-    s = context.application.bot_data["chat_registry"].stats()
+    # Sayılar TEK kaynaktan (DB) okunur. Önceden panel chats.json'dan,
+    # istatistik ekranı usage_stats.json'dan, analitik DB'den okuyordu —
+    # aynı bilgi üç yerde farklı görünebiliyordu.
+    db = context.application.bot_data.get("db")
+    s = db.stats() if db else {"total_chats": 0, "groups": 0, "privates": 0, "total_downloads": 0}
     mode = state.get_mode()
     lang = state.get_language()
     enabled = state.get_enabled()
@@ -433,6 +438,117 @@ def _cookie_log_text(context: ContextTypes.DEFAULT_TYPE) -> str:
 
     body = "\n\n".join(f"<code>{_esc(line)}</code>" for line in reversed(entries))
     return f"<b>🍪 Cookie Log</b> <i>(son {len(entries)})</i>\n\n{body}"
+
+
+# ── Analitik dashboard ───────────────────────────────────────────────────────
+
+def _sparkline(values: list[int]) -> str:
+    """Küçük metin grafiği — günlük indirme eğilimi."""
+    if not values or max(values) == 0:
+        return "▁" * len(values)
+    blocks = "▁▂▃▄▅▆▇█"
+    peak = max(values)
+    return "".join(blocks[min(len(blocks) - 1, int(v / peak * (len(blocks) - 1)))] for v in values)
+
+
+def _bar(value: int, total: int, width: int = 10) -> str:
+    if not total:
+        return "░" * width
+    filled = int(value / total * width)
+    return "█" * filled + "░" * (width - filled)
+
+
+def _analytics_text(context: ContextTypes.DEFAULT_TYPE) -> str:
+    db = context.application.bot_data.get("db")
+    if not db:
+        return "<b>📈 Analitik</b>\n\nVeritabanı yok."
+
+    data = analytics.summary(db)
+    daily = analytics.daily_counts(db, 7)
+    platforms = analytics.platform_distribution(db, days=30)
+    sources = analytics.source_distribution(db)
+    split = data["chat_split"]
+    fail = data["failure"]
+
+    counts = [d["count"] for d in daily]
+    week_total = sum(counts)
+
+    lines = [
+        "<b>📈 Analitik Panosu</b>",
+        "",
+        "<b>Aktif kullanıcı</b>",
+        f"  Bugün: <b>{data['dau']}</b> · Hafta: <b>{data['wau']}</b> · Ay: <b>{data['mau']}</b>",
+        "",
+        "<b>İndirme</b>",
+        f"  Bugün: <b>{data['downloads_today']}</b> · "
+        f"7 gün: <b>{week_total}</b> · Toplam: <b>{data['total_downloads']}</b>",
+        f"  <code>{_sparkline(counts)}</code> <i>son 7 gün</i>",
+        "",
+        "<b>Başarı oranı (7 gün)</b>",
+        f"  <code>{_bar(fail['ok'], fail['total'])}</code> "
+        f"<b>%{fail['rate']:.0f}</b> ({fail['ok']}/{fail['total']})",
+        "",
+        "<b>Sohbet dağılımı</b>",
+        f"  👤 Özel: <b>{split['private']}</b> · 👥 Grup: <b>{split['group']}</b>",
+    ]
+
+    if platforms:
+        total = sum(int(p["count"]) for p in platforms) or 1
+        lines.append("")
+        lines.append("<b>Platform dağılımı (30 gün)</b>")
+        for row in platforms[:6]:
+            count = int(row["count"])
+            lines.append(
+                f"  {_esc(row['platform']):<14} <code>{_bar(count, total, 8)}</code> "
+                f"<b>{count}</b> <i>(%{count * 100 // total})</i>"
+            )
+
+    if sources:
+        parts = " · ".join(f"{_esc(s['source'])}: <b>{s['count']}</b>" for s in sources)
+        lines.append("")
+        lines.append(f"<b>İndirme kaynağı</b>\n  {parts}")
+
+    buffer = context.application.bot_data.get("activity_buffer")
+    if buffer and buffer.pending():
+        lines.append(f"\n<i>({buffer.pending()} aktivite kaydı yazılmayı bekliyor)</i>")
+
+    return "\n".join(lines)
+
+
+def _top_users_text(context: ContextTypes.DEFAULT_TYPE) -> str:
+    db = context.application.bot_data.get("db")
+    if not db:
+        return "<b>🏆 En Aktif Kullanıcılar</b>\n\nVeritabanı yok."
+
+    rows = analytics.top_users(db, 15)
+    if not rows:
+        return "<b>🏆 En Aktif Kullanıcılar</b>\n\nHenüz kayıt yok."
+
+    lines = ["<b>🏆 En Aktif Kullanıcılar</b>", ""]
+    medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+
+    for index, row in enumerate(rows):
+        mark = medals.get(index, f"{index + 1}.")
+        name = row.get("username")
+        label = f"@{_esc(name)}" if name else _esc(row.get("first_name") or "—")
+        last = row.get("last_activity")
+        when = datetime.fromtimestamp(last).strftime("%d.%m") if last else "-"
+        lines.append(
+            f"{mark} {label} — <b>{row['total_downloads']}</b> indirme "
+            f"<i>({when})</i>\n     <code>{row['user_id']}</code>"
+        )
+
+    return "\n".join(lines)
+
+
+def _analytics_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🏆 En Aktif", callback_data="admin|topusers"),
+            InlineKeyboardButton("🔄 Yenile", callback_data="admin|analytics"),
+        ],
+        [InlineKeyboardButton("‹ Panel", callback_data="admin|panel")],
+    ])
 
 
 # ── Duyuru (broadcast) ───────────────────────────────────────────────────────
@@ -807,6 +923,18 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if sub == "bans":
         await query.answer()
         await _edit(query, _bans_text(context), _back_keyboard())
+        return
+
+    if sub == "analytics":
+        await query.answer()
+        await _edit(query, _analytics_text(context), _analytics_keyboard())
+        return
+
+    if sub == "topusers":
+        await query.answer()
+        await _edit(query, _top_users_text(context), InlineKeyboardMarkup([[
+            InlineKeyboardButton("‹ Analitik", callback_data="admin|analytics"),
+        ]]))
         return
 
     # ── Duyuru ────────────────────────────────────────────────────────────────

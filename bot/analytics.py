@@ -1,0 +1,268 @@
+from __future__ import annotations
+
+"""
+bot/analytics.py — kullanım analitiği.
+
+İki parça:
+
+1) ActivityBuffer — yazma tamponu.
+   Her mesajda "kullanıcıyı gördüm" bilgisini diske yazmak gereksiz I/O
+   üretir (aynı kullanıcı dakikada 5 link atabilir). Bunun yerine dokunuşlar
+   bellekte biriktirilir ve periyodik olarak TEK transaction'da yazılır.
+   İndirme kayıtları tamponlanmaz — onlar seyrek ve değerlidir, anında yazılır.
+
+2) Sorgular — panel dashboard'unun ihtiyaç duyduğu özetler.
+   Hepsi SQL tarafında toplanır (Python'da döngüyle sayılmaz).
+"""
+
+import asyncio
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+logger = logging.getLogger("downloader")
+
+FLUSH_INTERVAL = 30.0     # saniye
+FLUSH_THRESHOLD = 50      # bu kadar bekleyen dokunuş birikince hemen yaz
+
+
+@dataclass
+class _Touch:
+    username: str | None = None
+    first_name: str | None = None
+    language: str | None = None
+    title: str | None = None
+    chat_type: str | None = None
+    last_seen: float = field(default_factory=time.time)
+
+
+class ActivityBuffer:
+    """
+    Kullanıcı/sohbet aktivite güncellemelerini biriktirip toplu yazar.
+
+    Kayıp riski bilinçlidir: bot çökerse en fazla FLUSH_INTERVAL saniyelik
+    "son görülme" güncellemesi kaybolur. Bu veri kritik değil; buna karşılık
+    her mesajda disk yazımı ortadan kalkıyor.
+    """
+
+    def __init__(self, db: Any):
+        self.db = db
+        self._users: dict[int, _Touch] = {}
+        self._chats: dict[int, _Touch] = {}
+        self._lock = asyncio.Lock()
+        self._last_flush = time.time()
+
+    def pending(self) -> int:
+        return len(self._users) + len(self._chats)
+
+    async def touch_user(
+        self,
+        user_id: int,
+        *,
+        username: str | None = None,
+        first_name: str | None = None,
+        language: str | None = None,
+    ) -> None:
+        async with self._lock:
+            entry = self._users.setdefault(user_id, _Touch())
+            entry.username = username or entry.username
+            entry.first_name = first_name or entry.first_name
+            entry.language = language or entry.language
+            entry.last_seen = time.time()
+        await self._maybe_flush()
+
+    async def touch_chat(
+        self,
+        chat_id: int,
+        *,
+        title: str | None = None,
+        chat_type: str | None = None,
+    ) -> None:
+        async with self._lock:
+            entry = self._chats.setdefault(chat_id, _Touch())
+            entry.title = title or entry.title
+            entry.chat_type = chat_type or entry.chat_type
+            entry.last_seen = time.time()
+        await self._maybe_flush()
+
+    async def _maybe_flush(self) -> None:
+        if self.pending() >= FLUSH_THRESHOLD:
+            await self.flush()
+
+    async def flush(self) -> int:
+        """Bekleyen dokunuşları tek seferde yazar. Yazılan kayıt sayısını döner."""
+        async with self._lock:
+            users, chats = self._users, self._chats
+            self._users, self._chats = {}, {}
+
+        if not users and not chats:
+            self._last_flush = time.time()
+            return 0
+
+        def _write() -> int:
+            written = 0
+            for user_id, entry in users.items():
+                try:
+                    self.db.touch_user(
+                        user_id,
+                        username=entry.username,
+                        first_name=entry.first_name,
+                        language=entry.language,
+                    )
+                    written += 1
+                except Exception:
+                    logger.exception("Aktivite yazımı başarısız (user=%s)", user_id)
+            for chat_id, entry in chats.items():
+                try:
+                    self.db.touch_chat(
+                        chat_id, title=entry.title, chat_type=entry.chat_type
+                    )
+                    written += 1
+                except Exception:
+                    logger.exception("Aktivite yazımı başarısız (chat=%s)", chat_id)
+            return written
+
+        written = await asyncio.to_thread(_write)
+        self._last_flush = time.time()
+        return written
+
+
+async def activity_flusher(buffer: ActivityBuffer, interval: float = FLUSH_INTERVAL) -> None:
+    """Arka plan görevi: tamponu düzenli aralıklarla boşaltır."""
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            written = await buffer.flush()
+            if written:
+                logger.debug("Aktivite tamponu yazıldı: %d kayıt", written)
+        except asyncio.CancelledError:
+            # Kapanışta kalan veriyi kaybetme.
+            try:
+                await buffer.flush()
+            except Exception:
+                pass
+            raise
+        except Exception:
+            logger.exception("Aktivite tamponu yazılamadı")
+
+
+# ── Sorgular ─────────────────────────────────────────────────────────────────
+
+def active_users(db: Any, days: int) -> int:
+    cutoff = time.time() - days * 86400
+    row = db.query_one(
+        f"SELECT COUNT(*) AS c FROM users WHERE last_activity >= {db.ph}", (cutoff,)
+    )
+    return int((row or {}).get("c", 0))
+
+
+def downloads_since(db: Any, days: int) -> int:
+    cutoff = time.time() - days * 86400
+    row = db.query_one(
+        f"SELECT COUNT(*) AS c FROM downloads "
+        f"WHERE created_at >= {db.ph} AND result = 'success'",
+        (cutoff,),
+    )
+    return int((row or {}).get("c", 0))
+
+
+def daily_counts(db: Any, days: int = 7) -> list[dict[str, Any]]:
+    """Son N günün günlük indirme sayısı (bugün dahil, eskiden yeniye)."""
+    cutoff = time.time() - days * 86400
+    rows = db.query(
+        f"""SELECT CAST((created_at - {db.ph}) / 86400 AS INTEGER) AS bucket,
+                   COUNT(*) AS count
+            FROM downloads
+            WHERE created_at >= {db.ph} AND result = 'success'
+            GROUP BY bucket ORDER BY bucket""",
+        (cutoff, cutoff),
+    )
+    counts = {int(r["bucket"]): int(r["count"]) for r in rows}
+    return [
+        {"day_offset": days - 1 - i, "count": counts.get(days - 1 - i, 0)}
+        for i in range(days)
+    ]
+
+
+def top_users(db: Any, limit: int = 10) -> list[dict[str, Any]]:
+    return db.query(
+        f"""SELECT user_id, username, first_name, total_downloads, last_activity
+            FROM users WHERE total_downloads > 0
+            ORDER BY total_downloads DESC LIMIT {db.ph}""",
+        (limit,),
+    )
+
+
+def platform_distribution(db: Any, days: int | None = None) -> list[dict[str, Any]]:
+    if days:
+        cutoff = time.time() - days * 86400
+        return db.query(
+            f"""SELECT platform, COUNT(*) AS count FROM downloads
+                WHERE result='success' AND platform <> '' AND created_at >= {db.ph}
+                GROUP BY platform ORDER BY count DESC""",
+            (cutoff,),
+        )
+    return db.query(
+        """SELECT platform, COUNT(*) AS count FROM downloads
+           WHERE result='success' AND platform <> ''
+           GROUP BY platform ORDER BY count DESC"""
+    )
+
+
+def source_distribution(db: Any) -> list[dict[str, Any]]:
+    """Hangi indirme kaynağı (cobalt/ytdlp/gallerydl) ne kadar iş görmüş."""
+    return db.query(
+        """SELECT source, COUNT(*) AS count FROM downloads
+           WHERE result='success' AND source <> ''
+           GROUP BY source ORDER BY count DESC"""
+    )
+
+
+def chat_type_split(db: Any) -> dict[str, int]:
+    rows = db.query(
+        """SELECT chat_type, COUNT(*) AS count FROM chats
+           WHERE chat_type <> '' GROUP BY chat_type"""
+    )
+    out = {"private": 0, "group": 0}
+    for row in rows:
+        kind = str(row["chat_type"])
+        if kind == "private":
+            out["private"] += int(row["count"])
+        elif kind in {"group", "supergroup"}:
+            out["group"] += int(row["count"])
+    return out
+
+
+def failure_rate(db: Any, days: int = 7) -> dict[str, Any]:
+    cutoff = time.time() - days * 86400
+    row = db.query_one(
+        f"""SELECT
+              SUM(CASE WHEN result='success' THEN 1 ELSE 0 END) AS ok,
+              COUNT(*) AS total
+            FROM downloads WHERE created_at >= {db.ph}""",
+        (cutoff,),
+    ) or {}
+    ok = int(row.get("ok") or 0)
+    total = int(row.get("total") or 0)
+    return {
+        "ok": ok,
+        "total": total,
+        "failed": total - ok,
+        "rate": (ok * 100.0 / total) if total else 0.0,
+    }
+
+
+def summary(db: Any) -> dict[str, Any]:
+    """Dashboard için tek çağrıda tüm özet."""
+    base = db.stats()
+    return {
+        **base,
+        "dau": active_users(db, 1),
+        "wau": active_users(db, 7),
+        "mau": active_users(db, 30),
+        "downloads_today": downloads_since(db, 1),
+        "downloads_week": downloads_since(db, 7),
+        "chat_split": chat_type_split(db),
+        "failure": failure_rate(db, 7),
+    }

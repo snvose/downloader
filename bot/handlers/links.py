@@ -681,27 +681,24 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # ── Kullanıcı/sohbet kaydı (duyuru listesi + istatistik) ──────────────────
     # Desteklenen bir link gönderen herkes kaydedilir; indirme başarısız olsa
     # bile kullanıcı bilinir hale gelir (Faz 3 duyuru hedefi).
-    db = context.application.bot_data.get("db")
-    if db:
+    # Yazma tamponu: her mesajda diske yazmak yerine bellekte biriktirilip
+    # periyodik olarak tek transaction'da yazılır (bkz. bot/analytics.py).
+    activity = context.application.bot_data.get("activity_buffer")
+    if activity:
         try:
-            await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: (
-                    db.touch_user(
-                        user.id,
-                        username=user.username,
-                        first_name=user.first_name,
-                        language=user.language_code,
-                    ),
-                    db.touch_chat(
-                        chat.id,
-                        title=getattr(chat, "title", None) or "",
-                        chat_type=chat.type,
-                    ),
-                ),
+            await activity.touch_user(
+                user.id,
+                username=user.username,
+                first_name=user.first_name,
+                language=user.language_code,
+            )
+            await activity.touch_chat(
+                chat.id,
+                title=getattr(chat, "title", None) or "",
+                chat_type=chat.type,
             )
         except Exception:
-            logger.exception("DB kullanıcı kaydı başarısız")
+            logger.exception("Aktivite kaydı başarısız")
 
     # ── Geçici ban (canlı yayın spamı) ────────────────────────────────────────
     # İzin kontrolünden sonra, iş başlatılmadan önce. Süresi dolan ban
