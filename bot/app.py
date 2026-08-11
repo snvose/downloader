@@ -5,7 +5,15 @@ import logging
 import os
 import time
 
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
+from telegram import Update
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    TypeHandler,
+    filters,
+)
 
 from .config import Config
 from .emoji_manager import ensure_file
@@ -21,6 +29,7 @@ from .handlers.admin import (
     unbanid_command,
 )
 from .handlers.buttons import button_handler
+from .handlers.gate import ban_gate
 from .handlers.commands import (
     cancel_command,
     duyuru_command,
@@ -581,6 +590,11 @@ def build_application(config: Config) -> Application:
     # Tutarlılık için koleksiyon anahtarlarını baştan oluştur
     app.bot_data["pending_jobs"] = {}
     app.bot_data["playlist_sessions"] = {}
+
+    # Ban kapısı: her şeyden önce (group=-2). Banlı kullanıcı/grup buradan
+    # geçemez; böylece yeni bir handler eklendiğinde ban kontrolünü unutmak
+    # mümkün olmuyor. Bkz. bot/handlers/gate.py
+    app.add_handler(TypeHandler(Update, ban_gate), group=-2)
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))

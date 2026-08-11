@@ -50,10 +50,27 @@ class Permissions:
         if not isinstance(groups, list):
             groups = []
 
-        return {
-            "users": sorted({int(x) for x in users if str(x).lstrip("-").isdigit()}),
-            "groups": sorted({int(x) for x in groups if str(x).lstrip("-").isdigit()}),
-        }
+        raw_users = {int(x) for x in users if str(x).lstrip("-").isdigit()}
+        raw_groups = {int(x) for x in groups if str(x).lstrip("-").isdigit()}
+
+        # Yanlış listeye düşmüş ID'leri işaretine göre yerine koy.
+        # Telegram'da grup/kanal ID'leri negatif, kullanıcı ID'leri pozitiftir;
+        # /banid eskiden hepsini "users"a yazdığı için grup banları hiçbir
+        # zaman eşleşmiyordu. Okuma anında düzeltilir ve kalıcılaştırılır.
+        clean_users = {x for x in raw_users if x > 0} | {x for x in raw_groups if x > 0}
+        clean_groups = {x for x in raw_groups if x < 0} | {x for x in raw_users if x < 0}
+
+        result = {"users": sorted(clean_users), "groups": sorted(clean_groups)}
+
+        if clean_users != raw_users or clean_groups != raw_groups:
+            write_json_atomic(self.banned_file, result)
+
+        return result
+
+    @staticmethod
+    def is_group_id(target_id: int) -> bool:
+        """Telegram grup/kanal ID'leri negatiftir; kullanıcı ID'leri pozitif."""
+        return int(target_id) < 0
 
     def _save_bans(self, data: dict) -> None:
         clean = {
@@ -101,6 +118,31 @@ class Permissions:
         groups.discard(int(chat_id))
         data["groups"] = sorted(groups)
         self._save_bans(data)
+
+    # ── İşarete göre yönlendiren ortak giriş noktaları ────────────────────────
+    # Admin panelde ve /banid'de tek bir ID kutusu var; hangi listeye
+    # yazılacağına ID'nin işareti karar verir. Çağıranların bunu ayrı ayrı
+    # düşünmesi gerekmesin diye burada toplandı.
+
+    def ban_id(self, target_id: int) -> bool:
+        """Banlar. Grup banlandıysa True, kullanıcı banlandıysa False döner."""
+        if self.is_group_id(target_id):
+            self.ban_group(target_id)
+            return True
+        self.ban_user(target_id)
+        return False
+
+    def unban_id(self, target_id: int) -> bool:
+        if self.is_group_id(target_id):
+            self.unban_group(target_id)
+            return True
+        self.unban_user(target_id)
+        return False
+
+    def is_id_banned(self, target_id: int) -> bool:
+        if self.is_group_id(target_id):
+            return self.is_group_banned(target_id)
+        return self.is_user_banned(target_id)
 
     def check_update(self, update: Update, *, allow_admin_when_disabled: bool = True) -> PermissionResult:
         user = update.effective_user

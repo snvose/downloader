@@ -306,13 +306,71 @@ def _is_spotify_url(url: str) -> bool:
     return "spotify" in (urlparse(url).netloc or "").lower()
 
 
-def _spotify_track_query(url: str, queue: Any, job_id: str) -> str:
+def _spotify_embed_data(url: str) -> dict[str, Any]:
     """
-    Spotify track sayfasından şarkı adı + sanatçıyı okuyup
-    YouTube araması için bir sorgu metni üretir.
+    Spotify embed sayfasındaki __NEXT_DATA__ JSON'ını okur.
+
+    Bu sayfa API anahtarı istemez ve şarkının GERÇEK künyesini verir:
+    ad, sanatçı(lar), yayın tarihi ve 640x640 albüm kapağı. YouTube'dan
+    gelen kanal adı / yükleme tarihi / video küçük resminin aksine bunlar
+    şarkının kendi bilgileri.
+    """
+    m = re.search(r"/track/([A-Za-z0-9]+)", url)
+    if not m:
+        return {}
+
+    embed = f"https://open.spotify.com/embed/track/{m.group(1)}"
+    req = Request(embed, headers=HTTP_HEADERS)
+    with urlopen(req, timeout=20) as resp:
+        page = resp.read().decode("utf-8", errors="ignore")
+
+    blob = re.search(
+        r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+        page, re.DOTALL,
+    )
+    if not blob:
+        return {"_page": page}
+
+    import json as _json
+    data = _json.loads(blob.group(1))
+    entity = (
+        data.get("props", {}).get("pageProps", {})
+        .get("state", {}).get("data", {}).get("entity", {})
+    )
+    if not isinstance(entity, dict):
+        return {"_page": page}
+
+    entity["_page"] = page
+    return entity
+
+
+def _spotify_cover_url(entity: dict[str, Any]) -> str:
+    """Embed verisindeki en büyük albüm kapağını seçer."""
+    images = (entity.get("visualIdentity") or {}).get("image") or []
+    best = ""
+    best_size = 0
+    for item in images:
+        if not isinstance(item, dict):
+            continue
+        size = int(item.get("maxWidth") or 0)
+        if size > best_size and item.get("url"):
+            best, best_size = str(item["url"]), size
+    return best
+
+
+def _spotify_track_info(url: str, queue: Any, job_id: str) -> dict[str, Any]:
+    """
+    Spotify track sayfasından şarkının künyesini okur.
 
     yt-dlp Spotify'dan ses indiremez (DRM). Bu yüzden spotdl mantığı uygulanır:
     Spotify metadata -> YouTube'da ara -> oradan ses indir.
+
+    Dönüş: {"query", "title", "artist", "release_date", "cover_url"}
+    Önceden yalnızca arama metni ("query") döndürülüyordu; geri kalan künye
+    okunup atılıyordu ve dosyaya YouTube'un verisi yazılıyordu (sanatçı
+    yerine kanal adı "Hidra Official", yıl yerine video yükleme tarihi,
+    tür yerine YouTube kategorisi "Entertainment"). Artık kaynak künye
+    korunuyor.
     """
     path = (urlparse(url).path or "").lower()
     if "/track/" not in path:
@@ -321,55 +379,162 @@ def _spotify_track_query(url: str, queue: Any, job_id: str) -> str:
             "Albüm/playlist linkleri desteklenmiyor."
         )
 
-    # Spotify'ın oEmbed ucu API anahtarı gerektirmez ve şarkı başlığını verir.
-    oembed = "https://open.spotify.com/oembed?url=" + url
     title = ""
     author = ""
-    try:
-        req = Request(oembed, headers=HTTP_HEADERS)
-        with urlopen(req, timeout=20) as resp:
-            import json as _json
-            data = _json.loads(resp.read().decode("utf-8", errors="ignore"))
-        title = str(data.get("title") or "").strip()
-        author = str(data.get("author_name") or "").strip()
-    except Exception as exc:
-        queue.put(log_event(job_id, "warning", f"Spotify oembed başarısız: {exc}"))
+    release_date = ""
+    cover_url = ""
+    page = ""
 
-    # Yedek / tamamlayıcı: Spotify embed sayfası (JS gerektirmez) içindeki
-    # gömülü JSON'dan başlık + sanatçıyı oku. oembed sanatçı vermez; sorgu
-    # doğruluğu için sanatçı adı önemlidir.
-    if not title or not author:
-        track_id = ""
-        m = re.search(r"/track/([A-Za-z0-9]+)", url)
-        if m:
-            track_id = m.group(1)
-        if track_id:
-            embed = f"https://open.spotify.com/embed/track/{track_id}"
-            try:
-                req = Request(embed, headers=HTTP_HEADERS)
-                with urlopen(req, timeout=20) as resp:
-                    page = resp.read().decode("utf-8", errors="ignore")
-                if not author:
-                    m = re.search(r'"artists":\[\{"name":"([^"]+)"', page)
-                    if not m:
-                        m = re.search(r'"name":"([^"]+)","uri":"spotify:artist', page)
-                    if m:
-                        author = html.unescape(m.group(1)).strip()
-                if not title:
-                    m = re.search(r'"name":"([^"]+)","uri":"spotify:track', page)
-                    if not m:
-                        m = re.search(r'"title":"([^"]+)"', page)
-                    if m:
-                        title = html.unescape(m.group(1)).strip()
-            except Exception as exc:
-                queue.put(log_event(job_id, "warning", f"Spotify embed okunamadı: {exc}"))
+    # ── 1. Tercih edilen kaynak: embed sayfasının yapılandırılmış JSON'ı ──
+    try:
+        entity = _spotify_embed_data(url)
+        page = str(entity.pop("_page", "") or "")
+        title = str(entity.get("name") or entity.get("title") or "").strip()
+
+        artists = entity.get("artists")
+        if isinstance(artists, (list, tuple)):
+            names = [
+                str(a.get("name")).strip() for a in artists
+                if isinstance(a, dict) and a.get("name")
+            ]
+            author = ", ".join(names)
+
+        iso = (entity.get("releaseDate") or {}).get("isoString")
+        if iso:
+            release_date = str(iso)[:10]
+
+        cover_url = _spotify_cover_url(entity)
+    except Exception as exc:
+        queue.put(log_event(job_id, "warning", f"Spotify embed okunamadı: {exc}"))
+
+    # ── 2. Yedek: oEmbed ucu (başlık verir, sanatçı vermez) ──
+    if not title:
+        oembed = "https://open.spotify.com/oembed?url=" + url
+        try:
+            req = Request(oembed, headers=HTTP_HEADERS)
+            with urlopen(req, timeout=20) as resp:
+                import json as _json
+                data = _json.loads(resp.read().decode("utf-8", errors="ignore"))
+            title = str(data.get("title") or "").strip()
+            if not author:
+                author = str(data.get("author_name") or "").strip()
+        except Exception as exc:
+            queue.put(log_event(job_id, "warning", f"Spotify oembed başarısız: {exc}"))
+
+    # ── 3. Son çare: embed sayfasının ham HTML'inde regex ──
+    # __NEXT_DATA__ yapısı değişirse akış tümden durmasın diye duruyor.
+    if page and (not title or not author):
+        if not author:
+            m = (re.search(r'"artists":\[\{"name":"([^"]+)"', page)
+                 or re.search(r'"name":"([^"]+)","uri":"spotify:artist', page))
+            if m:
+                author = html.unescape(m.group(1)).strip()
+        if not title:
+            m = (re.search(r'"name":"([^"]+)","uri":"spotify:track', page)
+                 or re.search(r'"title":"([^"]+)"', page))
+            if m:
+                title = html.unescape(m.group(1)).strip()
 
     if not title:
         raise RuntimeError("Spotify şarkı bilgisi alınamadı.")
 
     query = f"{title} {author}".strip()
     queue.put(log_event(job_id, "info", f"Spotify -> YouTube araması: {query}"))
-    return query
+
+    return {
+        "query": query,
+        "title": title,
+        "artist": author,
+        "release_date": release_date,
+        "cover_url": cover_url,
+    }
+
+
+def _strip_youtube_tags(path: Path) -> None:
+    """
+    ffmpeg'in YouTube verisinden yazdığı, şarkıya ait OLMAYAN etiketleri siler.
+
+    FFmpegMetadata son işlemcisi video sayfasından ne bulursa yazıyor:
+    TCON'a YouTube kategorisi ("Entertainment"), yoruma video linki,
+    açıklamaya kanalın sosyal medya listesi, TDRC'ye video yükleme tarihi.
+    Bir şarkı dosyasında bunların hepsi yanlış bilgi. Doğrusu Spotify'dan
+    geliyor; gelmeyen alan boş bırakılır, uydurulmaz.
+    """
+    if path.suffix.lower() != ".mp3":
+        return
+
+    from mutagen.id3 import ID3, ID3NoHeaderError
+
+    try:
+        audio = ID3(str(path))
+    except (ID3NoHeaderError, Exception):
+        return
+
+    for frame in ("TCON", "COMM", "TXXX", "TDRC", "TDRL", "TYER"):
+        audio.delall(frame)
+
+    try:
+        audio.save(str(path))
+    except Exception:
+        pass
+
+
+def _apply_spotify_metadata(
+    files: list[str],
+    track: dict[str, Any],
+    *,
+    queue: Any,
+    job_id: str,
+) -> None:
+    """
+    İndirilen sesin etiketlerini Spotify künyesiyle DEĞİŞTİRİR.
+
+    Ses YouTube'dan geldiği için yt-dlp/ffmpeg oraya YouTube'un verisini
+    yazıyor: sanatçı yerine kanal adı, yıl yerine video yükleme tarihi,
+    tür yerine YouTube kategorisi, başlık yerine video başlığı. Kullanıcı
+    Spotify linki gönderdiğine göre doğru künye Spotify'ınki.
+
+    Albüm kapağı da Spotify'ın 640x640 kare kapağıyla değiştirilir; YouTube
+    küçük resmi 16:9 video karesi olduğu için kırpılınca albüm kapağı gibi
+    durmuyor.
+    """
+    audio = [Path(f) for f in files if Path(f).suffix.lower() in AUDIO_EXTS]
+    if not audio:
+        return
+
+    info: dict[str, Any] = {}
+    if track.get("title"):
+        info["track"] = track["title"]
+    if track.get("artist"):
+        info["artist"] = track["artist"]
+        info["album_artist"] = track["artist"].split(",")[0].strip()
+    if track.get("release_date"):
+        info["release_date"] = track["release_date"]
+
+    for path in audio:
+        _strip_youtube_tags(path)
+
+        # Spotify kapağını ses dosyasının yanına .jpg olarak yaz; metadata
+        # katmanı küçük resmi orada arıyor ve .jpg'yi .webp'den önce görüyor.
+        cover_url = track.get("cover_url")
+        if cover_url:
+            try:
+                req = Request(cover_url, headers=HTTP_HEADERS)
+                with urlopen(req, timeout=20) as resp:
+                    data = resp.read()
+                if data:
+                    path.with_suffix(".jpg").write_bytes(data)
+            except Exception as exc:
+                queue.put(log_event(
+                    job_id, "warning", f"Spotify kapağı indirilemedi: {exc}"
+                ))
+
+        written = apply_audio_metadata(path, info, job_id=job_id)
+        if written:
+            queue.put(log_event(
+                job_id, "info",
+                "Spotify künyesi yazıldı: " + ", ".join(sorted(written)),
+            ))
 
 
 def _is_tiktok_url(url: str) -> bool:
@@ -732,7 +897,8 @@ def download_with_ytdlp(
 
     # ── Spotify: yt-dlp indiremez (DRM). Metadata oku -> YouTube'dan ses indir ──
     if _is_spotify_url(url):
-        query = _spotify_track_query(url, queue, job_id)
+        track = _spotify_track_info(url, queue, job_id)
+        query = track["query"]
         search_url = "ytsearch1:" + query
         # Spotify her zaman ses olarak indirilir.
         spotify_mode = mode if _is_audio_mode(mode) else "audio_best"
@@ -759,10 +925,17 @@ def download_with_ytdlp(
                     use_cookies=use_cookies,
                     format_profile="normal",
                 )
+                # Etiketleri YouTube'unkiyle değil Spotify künyesiyle yaz.
+                _apply_spotify_metadata(files, track, queue=queue, job_id=job_id)
+
                 # Kaynak olarak orijinal Spotify linkini koru.
                 info["platform"] = "Spotify"
                 info["webpage_url"] = url
-                return files, (title or query), info
+                info["title"] = track.get("title") or title or query
+                if track.get("artist"):
+                    info["artist"] = track["artist"]
+                    info["uploader"] = track["artist"]
+                return files, (track.get("title") or title or query), info
 
             except Exception as exc:
                 message = short_error(exc)

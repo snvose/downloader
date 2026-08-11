@@ -248,6 +248,20 @@ class ProcessManager:
             return False
         return self.cancel_job(job.job_id)
 
+    def cancel_chat_jobs(self, chat_id: int) -> int:
+        """
+        Bir sohbetteki tüm aktif işleri iptal eder; iptal edilen sayıyı döner.
+
+        Grup banlandığında o gruptaki indirmeler devam etmesin diye gerekli:
+        ban yalnızca yeni istekleri engelliyordu, o an sürenler bitene kadar
+        kaynak tüketmeye devam ediyordu.
+        """
+        targets = [
+            job.job_id for job in list(self.jobs.values())
+            if job.chat_id == int(chat_id) and not job.done and not job.cancelled
+        ]
+        return sum(1 for job_id in targets if self.cancel_job(job_id))
+
     # ── Watchdog ─────────────────────────────────────────────────────────────
 
     def _dir_size(self, path: Path) -> int:

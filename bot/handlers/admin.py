@@ -63,22 +63,33 @@ async def banid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if not context.args:
-        await safe_reply(update.message, "Kullanım: /banid USER_ID")
+        await safe_reply(
+            update.message,
+            "Kullanım: <code>/banid ID</code>\n\n"
+            "Pozitif ID → kullanıcı, negatif ID → grup/kanal.",
+            parse_mode="HTML",
+        )
         return
 
     try:
-        user_id = int(context.args[0])
+        target_id = int(context.args[0])
     except ValueError:
-        await safe_reply(update.message, "USER_ID sayısal olmalı.")
+        await safe_reply(update.message, "ID sayısal olmalı.")
         return
 
     permissions = context.application.bot_data["permissions"]
-    permissions.ban_user(user_id)
-
     manager = context.application.bot_data["process_manager"]
-    manager.cancel_user_job(user_id)
 
-    await safe_reply(update.message, f"Banlandı: {user_id}")
+    # ID'nin işaretine göre doğru listeye yazılır. Önceden her ID "users"
+    # listesine gidiyordu; grup ID'si oraya yazılınca hiçbir kontrolle
+    # eşleşmiyor ve grup banı hiç işlemiyordu.
+    if permissions.ban_id(target_id):
+        cancelled = manager.cancel_chat_jobs(target_id)
+        note = f" ({cancelled} aktif indirme iptal edildi)" if cancelled else ""
+        await safe_reply(update.message, f"Grup banlandı: {target_id}{note}")
+    else:
+        manager.cancel_user_job(target_id)
+        await safe_reply(update.message, f"Kullanıcı banlandı: {target_id}")
 
 
 async def unbanid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -86,19 +97,24 @@ async def unbanid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if not context.args:
-        await safe_reply(update.message, "Kullanım: /unbanid USER_ID")
+        await safe_reply(
+            update.message,
+            "Kullanım: <code>/unbanid ID</code>\n\n"
+            "Pozitif ID → kullanıcı, negatif ID → grup/kanal.",
+            parse_mode="HTML",
+        )
         return
 
     try:
-        user_id = int(context.args[0])
+        target_id = int(context.args[0])
     except ValueError:
-        await safe_reply(update.message, "USER_ID sayısal olmalı.")
+        await safe_reply(update.message, "ID sayısal olmalı.")
         return
 
     permissions = context.application.bot_data["permissions"]
-    permissions.unban_user(user_id)
+    kind = "Grup" if permissions.unban_id(target_id) else "Kullanıcı"
 
-    await safe_reply(update.message, f"Ban kaldırıldı: {user_id}")
+    await safe_reply(update.message, f"{kind} banı kaldırıldı: {target_id}")
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -778,6 +794,11 @@ def _search_results_text(context: ContextTypes.DEFAULT_TYPE, term: str) -> tuple
                 mark = "🚫" if banned else "✅"
                 title = _esc(row.get("title") or "(başlıksız)")[:30]
                 lines.append(f"{mark} <b>{title}</b> — <code>{cid}</code>")
+                # Sohbetler önceden yalnızca listeleniyordu, butonu yoktu:
+                # panelden bir grubu banlamanın hiçbir yolu yoktu.
+                rows.append([InlineKeyboardButton(
+                    f"{mark} {title[:20]}", callback_data=f"admin|chatinfo|{cid}"
+                )])
 
     rows.append([
         InlineKeyboardButton("🔍 Yeni Arama", callback_data="admin|usersearch"),
@@ -850,22 +871,106 @@ def _user_info_text(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> tuple[s
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
-# ── Ban listesi ──
-def _bans_text(context: ContextTypes.DEFAULT_TYPE) -> str:
+def _chat_info_text(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Grup/kanal profili — kullanıcı profilinin sohbet karşılığı."""
+    db = context.application.bot_data.get("db")
     permissions = context.application.bot_data["permissions"]
+    manager = context.application.bot_data["process_manager"]
+
+    rows_db = db.search_chats(str(chat_id), limit=1) if db else []
+    row = rows_db[0] if rows_db else None
+    banned = permissions.is_group_banned(chat_id)
+    active = len([
+        j for j in manager.jobs.values()
+        if j.chat_id == chat_id and not j.done and not j.cancelled
+    ])
+
+    if not row:
+        lines = [
+            f"<b>💬 Sohbet</b> <code>{chat_id}</code>",
+            "",
+            "<i>Veritabanında kaydı yok.</i>",
+        ]
+    else:
+        first = datetime.fromtimestamp(row["first_seen"]).strftime("%d.%m.%Y")
+        last = datetime.fromtimestamp(row["last_activity"]).strftime("%d.%m.%Y %H:%M")
+        lines = [
+            f"<b>💬 {_esc(row.get('title') or '(başlıksız)')}</b>",
+            f"<code>{chat_id}</code> · {_esc(row.get('chat_type') or '—')}",
+            "",
+            f"📥 Toplam indirme: <b>{row['total_downloads']}</b>",
+            f"📅 İlk görülme: <b>{first}</b>",
+            f"🕐 Son aktivite: <b>{last}</b>",
+            f"🔔 Duyuru: <b>{'kapalı' if row['broadcast_opt_out'] else 'açık'}</b>",
+        ]
+
+    lines.append(f"\nBan durumu: {'🚫 <b>Banlı</b>' if banned else '✅ Banlı değil'}")
+    if active:
+        lines.append(f"⚙️ Aktif indirme: <b>{active}</b>")
+
+    action = (
+        InlineKeyboardButton("✅ Banı Kaldır", callback_data=f"admin|unban|{chat_id}")
+        if banned else
+        InlineKeyboardButton("🚫 Grubu Banla", callback_data=f"admin|banask|{chat_id}")
+    )
+    rows = [
+        [action],
+        [
+            InlineKeyboardButton("🔍 Arama", callback_data="admin|usersearch"),
+            InlineKeyboardButton("‹ Banlar", callback_data="admin|bans"),
+        ],
+    ]
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+# ── Ban listesi ──
+def _bans_screen(context: ContextTypes.DEFAULT_TYPE) -> tuple[str, InlineKeyboardMarkup]:
+    permissions = context.application.bot_data["permissions"]
+    db = context.application.bot_data.get("db")
     bans = permissions.list_bans()
     users = bans.get("users", [])
     groups = bans.get("groups", [])
-    u_list = "\n".join(f"  • <code>{u}</code>" for u in users[:15]) or "  —"
-    g_list = "\n".join(f"  • <code>{g}</code>" for g in groups[:15]) or "  —"
-    extra_u = f"\n  …+{len(users)-15}" if len(users) > 15 else ""
-    extra_g = f"\n  …+{len(groups)-15}" if len(groups) > 15 else ""
-    return (
-        "<b>🚫 Ban Yönetimi</b>\n\n"
-        f"<b>Kullanıcılar ({len(users)})</b>\n{u_list}{extra_u}\n\n"
-        f"<b>Gruplar ({len(groups)})</b>\n{g_list}{extra_g}\n\n"
-        "<i>Komutlar:</i> <code>/banid ID</code> · <code>/unbanid ID</code>"
+
+    lines = ["<b>🚫 Ban Yönetimi</b>", ""]
+    rows: list[list[InlineKeyboardButton]] = []
+
+    lines.append(f"<b>Kullanıcılar ({len(users)})</b>")
+    if not users:
+        lines.append("  —")
+    for uid in users[:8]:
+        row = db.get_user(uid) if db else None
+        label = _user_label(row) if row else f"ID {uid}"
+        lines.append(f"  • {label} — <code>{uid}</code>")
+        # Banlı kaydın üstüne tıklanabilirlik: banı kaldırmanın tek yolu
+        # /unbanid komutunu elle yazmaktı.
+        rows.append([InlineKeyboardButton(
+            f"👤 {label[:24]}", callback_data=f"admin|userinfo|{uid}"
+        )])
+    if len(users) > 8:
+        lines.append(f"  …+{len(users) - 8}")
+
+    lines.append(f"\n<b>Gruplar ({len(groups)})</b>")
+    if not groups:
+        lines.append("  —")
+    for cid in groups[:8]:
+        found = db.search_chats(str(cid), limit=1) if db else []
+        title = _esc(found[0].get("title") or "(başlıksız)") if found else f"ID {cid}"
+        lines.append(f"  • {title} — <code>{cid}</code>")
+        rows.append([InlineKeyboardButton(
+            f"💬 {title[:24]}", callback_data=f"admin|chatinfo|{cid}"
+        )])
+    if len(groups) > 8:
+        lines.append(f"  …+{len(groups) - 8}")
+
+    lines.append(
+        "\n<i>Komutlar:</i> <code>/banid ID</code> · <code>/unbanid ID</code>\n"
+        "<i>Negatif ID grubu, pozitif ID kullanıcıyı banlar.</i>"
     )
+
+    rows.append([InlineKeyboardButton("🔍 Kullanıcı / Grup Ara", callback_data="admin|usersearch")])
+    rows.append([InlineKeyboardButton("‹ Panel", callback_data="admin|panel")])
+
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
 # ── Sistem durumu (status_command ile aynı bilgi, panel içinde) ──
@@ -1167,10 +1272,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if sub == "bans":
         await query.answer()
-        await _edit(query, _bans_text(context), InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔍 Kullanıcı Ara", callback_data="admin|usersearch")],
-            [InlineKeyboardButton("‹ Panel", callback_data="admin|panel")],
-        ]))
+        text, markup = _bans_screen(context)
+        await _edit(query, text, markup)
         return
 
     if sub == "logs":
@@ -1233,44 +1336,78 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _edit(query, text, markup)
         return
 
-    if sub == "banask" and len(parts) >= 3:
-        # Geri dönüşü olan ama etkili bir aksiyon: yine de onay iste.
+    if sub == "chatinfo" and len(parts) >= 3:
         try:
-            uid = int(parts[2])
+            cid = int(parts[2])
         except ValueError:
             await query.answer("Geçersiz ID.", show_alert=True)
             return
+        text, markup = _chat_info_text(context, cid)
+        await query.answer()
+        await _edit(query, text, markup)
+        return
+
+    if sub == "banask" and len(parts) >= 3:
+        # Geri dönüşü olan ama etkili bir aksiyon: yine de onay iste.
+        try:
+            tid = int(parts[2])
+        except ValueError:
+            await query.answer("Geçersiz ID.", show_alert=True)
+            return
+
+        permissions = context.application.bot_data["permissions"]
+        is_group = permissions.is_group_id(tid)
+        back = f"admin|{'chatinfo' if is_group else 'userinfo'}|{tid}"
+        detail = (
+            "Banlanan grupta bot hiç çalışmaz; o anda süren indirmeler de "
+            "iptal edilir."
+            if is_group else
+            "Banlanan kullanıcı botu hiç kullanamaz ve aktif indirmesi "
+            "iptal edilir."
+        )
+
         await query.answer()
         await _edit(
             query,
-            f"🚫 <b>Kullanıcı banlansın mı?</b>\n\n"
-            f"<code>{uid}</code>\n\n"
-            "<i>Banlanan kullanıcı botu hiç kullanamaz ve aktif indirmesi "
-            "iptal edilir. İstediğin zaman geri alabilirsin.</i>",
+            f"🚫 <b>{'Grup' if is_group else 'Kullanıcı'} banlansın mı?</b>\n\n"
+            f"<code>{tid}</code>\n\n"
+            f"<i>{detail} İstediğin zaman geri alabilirsin.</i>",
             InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Evet, banla", callback_data=f"admin|ban|{uid}"),
-                InlineKeyboardButton("‹ Vazgeç", callback_data=f"admin|userinfo|{uid}"),
+                InlineKeyboardButton("✅ Evet, banla", callback_data=f"admin|ban|{tid}"),
+                InlineKeyboardButton("‹ Vazgeç", callback_data=back),
             ]]),
         )
         return
 
     if sub in {"ban", "unban"} and len(parts) >= 3:
         try:
-            uid = int(parts[2])
+            tid = int(parts[2])
         except ValueError:
             await query.answer("Geçersiz ID.", show_alert=True)
             return
 
         permissions = context.application.bot_data["permissions"]
-        if sub == "ban":
-            permissions.ban_user(uid)
-            manager.cancel_user_job(uid)
-            await query.answer(f"{uid} banlandı.")
-        else:
-            permissions.unban_user(uid)
-            await query.answer(f"{uid} banı kaldırıldı.")
 
-        text, markup = _user_info_text(context, uid)
+        # ID'nin işareti hedefi belirler: negatif → grup, pozitif → kullanıcı.
+        # Panel önceden her ID'yi kullanıcı sayıyordu.
+        if sub == "ban":
+            is_group = permissions.ban_id(tid)
+            if is_group:
+                cancelled = manager.cancel_chat_jobs(tid)
+                await query.answer(
+                    f"Grup banlandı." + (f" {cancelled} indirme iptal edildi." if cancelled else "")
+                )
+            else:
+                manager.cancel_user_job(tid)
+                await query.answer(f"{tid} banlandı.")
+        else:
+            is_group = permissions.unban_id(tid)
+            await query.answer(f"{tid} banı kaldırıldı.")
+
+        if is_group:
+            text, markup = _chat_info_text(context, tid)
+        else:
+            text, markup = _user_info_text(context, tid)
         await _edit(query, text, markup)
         return
 
