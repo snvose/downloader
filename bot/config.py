@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+ENV_FILE = DATA_DIR / ".env"
+
+
+@dataclass(frozen=True)
+class Config:
+    base_dir: Path
+    data_dir: Path
+    bot_name: str
+    bot_username: str
+    bot_token: str
+    admin_id: int
+    local_bot_api_base: str
+    max_simultaneous_downloads: int
+    max_file_size_mb: int
+    cookies_file: Path
+    download_dir: Path
+    log_dir: Path
+    cleanup_tz_offset: int        # downloads temizliği için saat dilimi (GMT-3 = -3)
+    cleanup_hour: int             # temizliğin yapılacağı saat
+    log_retention_days: int       # data/logs/ günlük dosya saklama süresi
+    cache_enabled: bool           # tekrar gönderilen linkler için file_id cache
+    show_links: bool              # start menüsünde owner/topluluk linkleri gösterilsin mi
+    owner_link: str               # owner iletişim linki
+    community_link: str           # topluluk / kanal linki
+    community_label: str          # topluluk butonu etiketi
+    # ── Kaynak koruması (canlı yayın / asılı kalan iş) ──
+    job_timeout_sec: int          # tek bir indirmenin üst süre sınırı
+    job_max_bytes: int            # tek bir indirmenin üst disk sınırı
+    live_strike_limit: int        # kaçıncı canlı yayın denemesinde ban
+    live_ban_days: int            # geçici ban süresi (gün)
+    # ── cobalt (kendi barındırdığın instance; boşsa kaynak devre dışı) ──
+    cobalt_api_url: str
+    cobalt_api_key: str
+    cobalt_timeout: int
+    # ── Veritabanı ──
+    db_path: Path
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        raise RuntimeError(f"{name} sayısal olmalı: {value}")
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name, "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "on", "evet", "acik", "açık"}
+
+
+def _path_from_env(name: str, default: str) -> Path:
+    raw = os.getenv(name, default).strip() or default
+    path = Path(raw)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path.resolve()
+
+
+def load_config() -> Config:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    load_dotenv(ENV_FILE)
+
+    bot_token = os.getenv("BOT_TOKEN", "").strip()
+    if not bot_token or bot_token == "BURAYA_BOT_TOKEN":
+        raise RuntimeError("data/.env içinde BOT_TOKEN eksik.")
+
+    admin_raw = os.getenv("ADMIN_ID", "").strip()
+    if not admin_raw or admin_raw == "BURAYA_TELEGRAM_ID":
+        raise RuntimeError("data/.env içinde ADMIN_ID eksik.")
+
+    try:
+        admin_id = int(admin_raw)
+    except ValueError:
+        raise RuntimeError("ADMIN_ID sayısal Telegram kullanıcı ID olmalı.")
+
+    local_base = os.getenv("LOCAL_BOT_API_BASE", "").strip().rstrip("/")
+    if local_base.endswith("/bot"):
+        local_base = local_base[:-4].rstrip("/")
+
+    download_dir = _path_from_env("DOWNLOAD_DIR", "data/downloads")
+    log_dir = _path_from_env("LOG_DIR", "data/logs")
+    cookies_file = _path_from_env("COOKIES_FILE", "data/cookies.txt")
+
+    download_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    return Config(
+        base_dir=BASE_DIR,
+        data_dir=DATA_DIR,
+        bot_name=os.getenv("BOT_NAME", "Downloader").strip() or "Downloader",
+        bot_username=os.getenv("BOT_USERNAME", "").strip(),
+        bot_token=bot_token,
+        admin_id=admin_id,
+        local_bot_api_base=local_base,
+        max_simultaneous_downloads=_env_int("MAX_SIMULTANEOUS_DOWNLOADS", 3),
+        max_file_size_mb=_env_int("MAX_FILE_SIZE_MB", 1900),
+        cookies_file=cookies_file,
+        download_dir=download_dir,
+        log_dir=log_dir,
+        cleanup_tz_offset=_env_int("CLEANUP_TZ_OFFSET", -3),  # GMT-3 varsayılan
+        cleanup_hour=_env_int("CLEANUP_HOUR", 0),
+        log_retention_days=_env_int("LOG_RETENTION_DAYS", 7),
+        cache_enabled=_env_bool("CACHE_ENABLED", True),
+        show_links=_env_bool("SHOW_LINKS", False),
+        owner_link=os.getenv("OWNER_LINK", "").strip(),
+        community_link=os.getenv("COMMUNITY_LINK", "").strip(),
+        community_label=os.getenv("COMMUNITY_LABEL", "Topluluk").strip() or "Topluluk",
+        # 30 dk: en büyük meşru indirme (uzun YouTube videosu) bile bunun
+        # çok altında kalır; sonsuz akış buna takılır.
+        job_timeout_sec=_env_int("JOB_TIMEOUT_SEC", 1800),
+        job_max_bytes=_env_int("JOB_MAX_GB", 4) * 1024 * 1024 * 1024,
+        live_strike_limit=_env_int("LIVE_STRIKE_LIMIT", 3),
+        live_ban_days=_env_int("LIVE_BAN_DAYS", 5),
+        # cobalt'ın herkese açık ortak API'si YOKTUR; kendi instance'ını
+        # çalıştırıp adresini buraya yazman gerekir. Boş bırakılırsa cobalt
+        # kaynağı sessizce atlanır ve bot yt-dlp ile çalışmaya devam eder.
+        cobalt_api_url=os.getenv("COBALT_API_URL", "").strip().rstrip("/"),
+        cobalt_api_key=os.getenv("COBALT_API_KEY", "").strip(),
+        cobalt_timeout=_env_int("COBALT_TIMEOUT", 30),
+        db_path=_path_from_env("DB_PATH", "data/bot.db"),
+    )

@@ -1,0 +1,45 @@
+# Sırlar ve çalışma zamanı verisi — ASLA paylaşılmamalı
+data/.env
+data/cookies.txt
+data/cache.json
+data/chats.json
+data/bot_state.json
+data/banned_users.json
+data/temp_bans.json
+data/usage_stats.json
+data/emoji_slots.json
+data/backup/
+data/downloads/
+data/logs/
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Geliştirme notları (public repoda istenmez)
+bugs.txt
+
+# Editör / sistem
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Faz 2-3 çalışma zamanı verisi
+data/bot.db
+data/bot.db-wal
+data/bot.db-shm
+data/cookie_stats.json
+data/sources.json
+data/broadcasts.json
+
+# GÜVENLİK: token/sır içeren dosyalar
+data/env-backup.env
+data/bot-api/
+data/*.binlog
+log.txt
+bugs.txt
