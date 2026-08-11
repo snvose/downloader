@@ -188,6 +188,12 @@ def safe_public_error(raw: str) -> str:
 
     lowered = str(raw or "").lower()
 
+    # "Unsupported URL" önce bakılır. Toplu hata mesajında birden çok denemenin
+    # çıktısı yan yana duruyor; aşağıdaki tiktok+403 kuralı çok geniş olduğu
+    # için, asıl sebep "bu adres türü desteklenmiyor" olsa bile bir fallback'in
+    # 403'ünü yakalayıp kullanıcıya "erişim engeli" diyordu.
+    if "unsupported url" in lowered:
+        return t("err_unsupported")
     if "tiktok" in lowered and ("403" in lowered or "forbidden" in lowered):
         return t("err_tiktok_403")
     if "only available for registered users" in lowered:
@@ -196,8 +202,6 @@ def safe_public_error(raw: str) -> str:
         return t("err_private")
     if "requested format is not available" in lowered:
         return t("err_format")
-    if "unsupported url" in lowered:
-        return t("err_unsupported")
     if "cancel" in lowered or "terminated" in lowered:
         return t("cancelled")
 
