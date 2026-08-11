@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from bot.emoji_manager import em
 from bot.i18n import t
+from bot.live_guard import format_duration
+from bot.pending import clear_user_pending
 from bot.safe_message import safe_message_edit, safe_reply
 from bot.storage import increment_stat
 from bot.ui import (
@@ -20,6 +24,9 @@ from bot.utils import (
     is_supported_url,
     normalize_url,
 )
+
+
+logger = logging.getLogger("downloader")
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -80,6 +87,13 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     ok = manager.cancel_user_job(user_id)
 
+    # Bekleyen format menüsü de iptal kapsamındadır. Önceden /cancel bunu
+    # görmüyordu: kullanıcı menüyü açıp indirmeyi başlatmadan /cancel yazınca
+    # "iptal edilecek işlem yok" yanıtı alıyor, menü de ekranda kalıyordu.
+    pending_cancelled = bool(
+        await clear_user_pending(context.application, user_id)
+    )
+
     # Aktif bir playlist oturumu varsa onu da iptal et (item döngüsü durur).
     playlist_cancelled = False
     for pjob in context.application.bot_data.get("playlist_sessions", {}).values():
@@ -87,7 +101,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             pjob["cancelled"] = True
             playlist_cancelled = True
 
-    if ok or playlist_cancelled:
+    if ok or playlist_cancelled or pending_cancelled:
         if config:
             increment_stat(config.data_dir, "cancelled_downloads")
 
@@ -154,6 +168,40 @@ async def ses_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     chat = update.effective_chat
     is_admin = permissions.is_admin(user.id)
 
+    # ── Canlı yayın geçici banı ───────────────────────────────────────────────
+    # BYPASS: bu kontrol yalnızca link handler'ında vardı; canlı yayın spamı
+    # yüzünden banlanan kullanıcı /ses ile indirmeye devam edebiliyordu.
+    live_guard = bot_data.get("live_guard")
+    if live_guard and not is_admin:
+        import asyncio as _asyncio
+        remaining = await _asyncio.to_thread(live_guard.ban_remaining, user.id)
+        if remaining > 0:
+            if chat.type == "private":
+                await safe_reply(
+                    update.message,
+                    t("live_ban_active", duration=format_duration(remaining)),
+                    parse_mode="HTML",
+                    reply_to_message_id=update.message.message_id,
+                )
+            return
+
+    # Kullanıcı/sohbet kaydı (duyuru listesi + analitik) — link akışıyla aynı.
+    db = bot_data.get("db")
+    if db:
+        import asyncio as _asyncio
+        try:
+            await _asyncio.to_thread(
+                db.touch_user, user.id,
+                username=user.username, first_name=user.first_name,
+                language=user.language_code,
+            )
+            await _asyncio.to_thread(
+                db.touch_chat, chat.id,
+                title=getattr(chat, "title", None) or "", chat_type=chat.type,
+            )
+        except Exception:
+            logger.exception("DB kullanıcı kaydı başarısız (/ses)")
+
     # Bakım modu: indirme yapılmaz, sabit mesaj döner (admin hariç).
     if state.is_maintenance() and not is_admin:
         await safe_reply(update.message, t("maintenance"), reply_to_message_id=update.message.message_id)
@@ -194,7 +242,9 @@ async def ses_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 chat_title=getattr(chat, "title", None), chat_type=chat.type,
             )
         except Exception:
-            pass
+            # Sessiz mod kullanıcıya mesaj göndermez ama hata yutulmamalı;
+            # aksi halde indirme hiç başlamadığında iz kalmıyordu.
+            logger.exception("Safe mode /ses indirmesi başlatılamadı | url=%s", url)
         return
 
     wait_msg = await safe_reply(

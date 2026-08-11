@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import shutil
 import sys
 from datetime import datetime
@@ -14,6 +15,9 @@ from bot.cookie_health import platform_cookie_status
 from bot.pending import clear_all_pending
 from bot.state import MODE_MAINTENANCE, MODE_NORMAL, MODE_SAFE
 from bot.storage import read_json
+
+
+logger = logging.getLogger("downloader")
 
 
 def _esc(value: object) -> str:
@@ -164,12 +168,30 @@ _MODE_SHORT = {
 
 
 async def _edit(query, text: str, markup: InlineKeyboardMarkup) -> None:
+    """
+    Panel mesajını günceller.
+
+    Önceden tüm istisnalar sessizce yutuluyordu: panel güncellenmezse admin
+    hiçbir geri bildirim almıyor, butona bastığında hiçbir şey olmuyordu.
+    Artık "değişiklik yok" hatası (zararsız) ayrılıyor, gerçek hatalar
+    loglanıyor ve kullanıcıya uyarı gösteriliyor.
+    """
     try:
         await query.edit_message_text(
             text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        message = str(exc).lower()
+        # Aynı içerik tekrar gönderilince Telegram hata döndürür; bu normal.
+        if "not modified" in message:
+            return
+        logger.warning("Admin paneli güncellenemedi: %s", exc)
+        try:
+            await query.answer(
+                "Panel güncellenemedi, /admin ile yeniden aç.", show_alert=True
+            )
+        except Exception:
+            pass
 
 
 # ── Ana panel ──
@@ -596,11 +618,32 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _edit(query, text, markup)
         return
 
+    # Geri dönüşü olmayan işlem: önce onay iste.
+    # Önceden tek tıkla tüm aktif indirmeler iptal ediliyordu; yanlışlıkla
+    # basıldığında kullanıcıların işi geri getirilemiyordu.
     if sub == "clear":
+        active = len([j for j in manager.jobs.values() if not j.done and not j.cancelled])
+        pending = len(context.application.bot_data.get("pending_jobs") or {})
+        await query.answer()
+        await _edit(
+            query,
+            "🧹 <b>Aktif işler temizlensin mi?</b>\n\n"
+            f"• Devam eden indirme: <b>{active}</b>\n"
+            f"• Açık format menüsü: <b>{pending}</b>\n\n"
+            "<i>Bu işlem geri alınamaz; kullanıcıların devam eden "
+            "indirmeleri iptal edilir.</i>",
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Evet, temizle", callback_data="admin|clear_yes"),
+                InlineKeyboardButton("‹ Vazgeç", callback_data="admin|panel"),
+            ]]),
+        )
+        return
+
+    if sub == "clear_yes":
         manager.shutdown()
-        await clear_all_pending(context.application)
+        cleared = await clear_all_pending(context.application)
         context.application.bot_data["playlist_sessions"] = {}
-        await query.answer("Tüm aktif işler temizlendi.")
+        await query.answer(f"Temizlendi. ({cleared} menü kaldırıldı)")
         await _edit(query, _panel_text(context), _panel_keyboard(state))
         return
 

@@ -80,7 +80,10 @@ def _render_emoji_page(page: int, last_id: str | None = None) -> tuple[str, Inli
         InlineKeyboardButton("🗑 Tümünü Sıfırla", callback_data="emoji|resetall"),
         InlineKeyboardButton("📤 Dosya", callback_data="emoji|file"),
     ])
-    rows.append([InlineKeyboardButton(eb("menu_back", "‹ Owner"), callback_data="menu|owner")])
+    # Geri butonu admin paneline döner. Önceden "menu|owner"a gidiyordu;
+    # emoji paneli /admin üzerinden açıldığı için kullanıcı farklı bir
+    # menüye düşüyordu.
+    rows.append([InlineKeyboardButton("‹ Admin Paneli", callback_data="admin|panel")])
 
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 

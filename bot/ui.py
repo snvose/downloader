@@ -84,23 +84,6 @@ def help_text() -> str:
     )
 
 
-def owner_text(enabled: bool, active_jobs: int, banned_users: int, banned_groups: int) -> str:
-    return (
-        f"<b>{em('menu_owner')} Owner Settings</b>\n\n"
-        f"Durum: <b>{'Çalışıyor' if enabled else 'Durduruldu'}</b>\n"
-        f"{em('owner_active')} Aktif iş: <b>{active_jobs}</b>\n"
-        f"{em('owner_ban')} Banlı kullanıcı: <b>{banned_users}</b>\n"
-        f"{em('owner_groups')} Banlı grup: <b>{banned_groups}</b>\n\n"
-        "<b>Komutlar</b>\n"
-        "<code>/dur</code> — botu durdurur\n"
-        "<code>/basla</code> — botu başlatır\n"
-        "<code>/status</code> — sistem durumunu gösterir\n"
-        "<code>/banid user_id</code> — kullanıcıyı banlar\n"
-        "<code>/unbanid user_id</code> — banı kaldırır\n"
-        "<code>/emojiler</code> — premium emoji yönetimi"
-    )
-
-
 def start_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(eb("menu_help", "Yardım"), callback_data="menu|help")],
@@ -128,18 +111,6 @@ def start_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
 def back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(eb("menu_back", "Geri"), callback_data="menu|main")]
-    ])
-
-
-def owner_keyboard(enabled: bool) -> InlineKeyboardMarkup:
-    toggle_key = "btn_stop" if enabled else "btn_start"
-    toggle_text = "Durdur" if enabled else "Başlat"
-
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(eb(toggle_key, toggle_text), callback_data="owner|toggle")],
-        [InlineKeyboardButton(eb("btn_emoji", "Emoji Yönetimi"), callback_data="emoji|page|0")],
-        [InlineKeyboardButton(eb("btn_refresh", "Yenile"), callback_data="menu|owner")],
-        [InlineKeyboardButton(eb("menu_back", "Geri"), callback_data="menu|main")],
     ])
 
 

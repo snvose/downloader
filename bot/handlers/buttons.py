@@ -8,8 +8,6 @@ from telegram.ext import ContextTypes
 
 from bot.i18n import t
 from bot.pending import clear_pending_job
-
-logger = logging.getLogger("downloader")
 from bot.handlers.emoji_admin import handle_emoji_callback
 from bot.handlers.links import (
     _build_playlist_type_keyboard,
@@ -26,11 +24,11 @@ from bot.ui import (
     details_messages,
     help_text,
     media_info_text,
-    owner_keyboard,
-    owner_text,
     start_keyboard,
     start_text,
 )
+
+logger = logging.getLogger("downloader")
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -90,32 +88,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    # ÖLÜ AKIŞ: "owner|toggle" eski Owner Settings menüsüne aitti. O menü
+    # kaldırıldı (yerine /admin paneli geldi) ama callback canlı kalmıştı;
+    # sohbet geçmişindeki eski bir mesajdan tıklanınca kaldırılmış menüyü
+    # geri getiriyordu. Artık kullanıcı yeni panele yönlendiriliyor.
     if data == "owner|toggle":
         if not is_owner:
             await query.answer("Bu alan sadece owner için.", show_alert=True)
             return
 
-        enabled = not permissions.get_bot_enabled()
-        permissions.set_bot_enabled(enabled)
-
-        if not enabled:
-            manager.shutdown()
-
-        await query.answer("Bot çalışıyor." if enabled else "Bot durduruldu.")
-
-        counts = permissions.counts()
-        active_jobs = len([job for job in manager.jobs.values() if not job.done and not job.cancelled])
-
+        from bot.handlers.admin import _panel_keyboard, _panel_text
+        state = context.application.bot_data["bot_state"]
+        await query.answer("Bu menü yenilendi — admin paneli açılıyor.")
         await safe_query_edit(
             query,
-            owner_text(
-                enabled=counts["enabled"],
-                active_jobs=active_jobs,
-                banned_users=counts["banned_users"],
-                banned_groups=counts["banned_groups"],
-            ),
+            _panel_text(context),
             parse_mode="HTML",
-            reply_markup=owner_keyboard(counts["enabled"]),
+            reply_markup=_panel_keyboard(state),
             disable_web_page_preview=True,
         )
         return
@@ -342,6 +331,49 @@ async def _handle_do(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # temizlendi; hata yolunda da ekranda kalıntı kalmıyor.
 
 
+# "Hepsini İndir" tek seferde en fazla bu kadar içerik alır.
+PLAYLIST_BATCH_LIMIT = 50
+
+
+def _spawn_playlist_task(context, pjob: dict, pjob_id: str, indices: list[int], status_msg) -> None:
+    """
+    Playlist indirme görevini güvenli biçimde başlatır.
+
+    Önceden düz asyncio.create_task kullanılıyordu: görev bir istisna atarsa
+    hata hiçbir yere yazılmıyor (sessiz başarısızlık) ve pjob["downloading"]
+    True kalıyordu — kullanıcı bir daha playlist indiremiyordu. Artık istisna
+    loglanıyor, bayrak sıfırlanıyor ve kullanıcıya haber veriliyor.
+    """
+    task = asyncio.create_task(
+        _run_playlist_download(context, pjob_id, indices, status_msg)
+    )
+
+    def _done(finished: asyncio.Task) -> None:
+        pjob["downloading"] = False
+        try:
+            finished.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Playlist indirme görevi çöktü | pjob=%s", pjob_id)
+            context.application.bot_data.get("playlist_sessions", {}).pop(pjob_id, None)
+            asyncio.create_task(_notify_playlist_failure(context, status_msg))
+
+    task.add_done_callback(_done)
+
+
+async def _notify_playlist_failure(context, status_msg) -> None:
+    """Playlist görevi çöktüğünde kullanıcı sonsuza dek beklemesin."""
+    if not status_msg:
+        return
+    try:
+        await status_msg.edit_text(
+            "❌ Playlist indirme beklenmedik şekilde durdu. Lütfen tekrar dene."
+        )
+    except Exception:
+        pass
+
+
 async def _handle_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     parts = (query.data or "").split("|")
@@ -428,9 +460,17 @@ async def _handle_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             idx = int(parts[2])
         except ValueError:
             return
+        # İndeks sınırı: eski/bozuk callback verisi IndexError'a yol açıyordu
+        # ve hata görev içinde sessizce kayboluyordu.
+        if not 0 <= idx < len(pjob.get("entries") or []):
+            await query.answer(t("menu_expired_link"), show_alert=True)
+            return
         if manager.get_user_active_job(pjob["user_id"]) or pjob.get("downloading"):
             await query.answer(t("wait_active"), show_alert=True)
             return
+        # Bayrağı BURADA (senkron) set ediyoruz. Görev içinde set edilince
+        # hızlı çift tıklama iki eş zamanlı indirme başlatabiliyordu.
+        pjob["downloading"] = True
         raw = str(pjob["entries"][idx].get("title") or f"#{idx+1}")[:60]
         status_msg = await context.bot.send_message(
             chat_id=pjob["chat_id"],
@@ -439,7 +479,7 @@ async def _handle_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             message_thread_id=pjob.get("thread_id"),
             reply_to_message_id=pjob.get("reply_to"),
         )
-        asyncio.create_task(_run_playlist_download(context, pjob_id, [idx], status_msg))
+        _spawn_playlist_task(context, pjob, pjob_id, [idx], status_msg)
         return
 
     if action in {"pl_dlsel", "pl_dlall"}:
@@ -447,27 +487,39 @@ async def _handle_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await query.answer(t("wait_active"), show_alert=True)
             return
 
+        entries = pjob.get("entries") or []
+
         if action == "pl_dlsel":
-            indices = sorted(pjob.get("selected", set()))
+            # Sınır dışı seçimleri ele (eski oturumdan kalmış olabilir)
+            indices = sorted(i for i in pjob.get("selected", set()) if 0 <= i < len(entries))
         else:
-            limit = 50
-            indices = list(range(min(len(pjob["entries"]), limit)))
+            indices = list(range(min(len(entries), PLAYLIST_BATCH_LIMIT)))
 
         if not indices:
             await query.answer("Hiç seçim yok.", show_alert=True)
             return
+
+        pjob["downloading"] = True
 
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
 
+        # "Hepsini indir" sessizce 50'de kesiyordu; kullanıcıya söylenmiyordu.
+        note = ""
+        if action == "pl_dlall" and len(entries) > PLAYLIST_BATCH_LIMIT:
+            note = (
+                f"\n<i>Not: playlist {len(entries)} içerik barındırıyor, "
+                f"ilk {PLAYLIST_BATCH_LIMIT} tanesi indirilecek.</i>"
+            )
+
         status_msg = await context.bot.send_message(
             chat_id=pjob["chat_id"],
-            text=f"⏳ {len(indices)} içerik indiriliyor...",
+            text=f"⏳ {len(indices)} içerik indiriliyor...{note}",
             parse_mode="HTML",
             message_thread_id=pjob.get("thread_id"),
             reply_to_message_id=pjob.get("reply_to"),
         )
-        asyncio.create_task(_run_playlist_download(context, pjob_id, indices, status_msg))
+        _spawn_playlist_task(context, pjob, pjob_id, indices, status_msg)
         return
