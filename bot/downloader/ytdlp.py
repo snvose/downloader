@@ -542,6 +542,187 @@ def _is_tiktok_url(url: str) -> bool:
     return "tiktok" in host
 
 
+# ── TikTok slayt (fotoğraf) gönderileri ──────────────────────────────────────
+# TikTok'ta iki tür gönderi var: /video/ ve /photo/. yt-dlp yalnızca ilkini
+# tanıyor; TikTokIE._VALID_URL /photo/ ile HİÇ eşleşmiyor, extractor'da
+# imagePost alanını okuyan tek satır bile yok. Sonuç: fotoğraf gönderisi
+# "Unsupported URL" ile düşüyor, gallery-dl de adresi /video/'ya çevirip
+# 403 yiyor (TikTok'un JS challenge'ını çözemiyor). Yani slayt gönderileri
+# botta tamamen indirilemez durumdaydı.
+#
+# Çözüm: adresi /video/'ya çevirip sayfayı yt-dlp'ye çektiriyoruz — challenge
+# çözme kodu zaten onda var ve çalışıyor. Görseller o adımın ürettiği ham
+# veride (imagePost.images) duruyor, biz onu okuyup indiriyoruz.
+
+_TIKTOK_SHORT_HOSTS = {"vm.tiktok.com", "vt.tiktok.com"}
+
+
+def _resolve_tiktok_url(url: str) -> str:
+    """
+    vt./vm. kısa linkini gerçek adrese çevirir.
+
+    Kısa link fotoğraf mı video mu belli etmiyor; hangi dalda ilerleyeceğimizi
+    ancak yönlendirmeyi izleyerek bilebiliyoruz.
+    """
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower()
+    is_short = host in _TIKTOK_SHORT_HOSTS or (
+        host.endswith("tiktok.com") and parsed.path.startswith("/t/")
+    )
+    if not is_short:
+        return url
+
+    # HEAD yeter: yalnızca yönlendirmenin bittiği adres lazım, sayfanın
+    # kendisi değil (her kısa linkte ~400 KB gövde indirmenin anlamı yok).
+    try:
+        with urlopen(Request(url, headers=HTTP_HEADERS, method="HEAD"), timeout=15) as resp:
+            return resp.url or url
+    except Exception:
+        return url
+
+
+def _tiktok_photo_id(url: str) -> str:
+    """Slayt gönderisiyse gönderi id'sini, değilse boş string döner."""
+    if not _is_tiktok_url(url):
+        return ""
+    match = re.search(r"/photo/(\d+)", urlparse(url).path)
+    return match.group(1) if match else ""
+
+
+def _tiktok_photo_detail(
+    video_url: str,
+    photo_id: str,
+    *,
+    cookies_file: Path | None,
+    use_cookies: bool,
+    queue: Any,
+    job_id: str,
+) -> dict[str, Any]:
+    """
+    Slayt gönderisinin ham TikTok verisini döner.
+
+    yt-dlp'nin iç metodu çağrılıyor; sürüm yükseltmesinde adı değişirse
+    indirme çökmesin diye AttributeError ayrıca ele alınıyor.
+    """
+    from yt_dlp.extractor.tiktok import TikTokIE
+
+    opts = _build_opts(
+        job_id=job_id,
+        url=video_url,
+        download_dir=Path("."),
+        queue=queue,
+        cookies_file=cookies_file,
+        mode="video_best",
+        use_cookies=use_cookies,
+        format_profile="normal",
+    )
+    opts.pop("progress_hooks", None)
+    opts["skip_download"] = True
+
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        extractor = TikTokIE(ydl)
+        extractor.initialize()
+        try:
+            detail, _status = extractor._extract_web_data_and_status(video_url, photo_id)
+        except AttributeError as exc:
+            raise RuntimeError(
+                "yt-dlp'nin TikTok iç arayüzü değişmiş, slayt gönderisi "
+                f"okunamadı: {exc}"
+            ) from exc
+
+    return detail if isinstance(detail, dict) else {}
+
+
+def _tiktok_photo_urls(detail: dict[str, Any]) -> list[str]:
+    """imagePost.images[] içinden görsel adreslerini sırasıyla çıkarır."""
+    images = ((detail.get("imagePost") or {}).get("images")) or []
+    urls: list[str] = []
+    for image in images:
+        candidates = ((image.get("imageURL") or {}).get("urlList")) or []
+        for candidate in candidates:
+            if candidate:
+                urls.append(str(candidate))
+                break
+    return urls
+
+
+def _download_tiktok_photos(
+    *,
+    job_id: str,
+    url: str,
+    video_url: str,
+    photo_id: str,
+    download_dir: Path,
+    queue: Any,
+    cookies_file: Path | None,
+) -> tuple[list[str], str, dict[str, Any]]:
+    """Slayt gönderisinin görsellerini indirir."""
+    errors: list[str] = []
+    detail: dict[str, Any] = {}
+
+    for label, use_cookies in (("cookies", True), ("cookieless", False)):
+        try:
+            queue.put(log_event(job_id, "info", f"TikTok slayt denemesi: {label}"))
+            detail = _tiktok_photo_detail(
+                video_url, photo_id,
+                cookies_file=cookies_file, use_cookies=use_cookies,
+                queue=queue, job_id=job_id,
+            )
+            if _tiktok_photo_urls(detail):
+                break
+            errors.append(f"{label}: gönderide görsel bulunamadı")
+        except Exception as exc:
+            message = short_error(exc)
+            errors.append(f"{label}: {message}")
+            queue.put(log_event(
+                job_id, "warning", f"TikTok slayt denemesi başarısız [{label}]: {message}",
+            ))
+
+    image_urls = _tiktok_photo_urls(detail)
+    if not image_urls:
+        raise RuntimeError(
+            "TikTok slayt gönderisinin görselleri okunamadı — " + " | ".join(errors)
+        )
+
+    title = str((detail.get("desc") or "")).strip()
+    uploader = str(((detail.get("author") or {}).get("uniqueId") or "")).strip()
+
+    files: list[str] = []
+    for index, image_url in enumerate(image_urls, start=1):
+        target = Path(download_dir) / f"tiktok_{photo_id}_{index:02d}.jpg"
+        try:
+            with urlopen(Request(image_url, headers=HTTP_HEADERS), timeout=60) as resp:
+                data = resp.read()
+        except Exception as exc:
+            queue.put(log_event(
+                job_id, "warning",
+                f"Slayt görseli {index} indirilemedi: {short_error(exc)}",
+            ))
+            continue
+
+        if not data:
+            continue
+        target.write_bytes(data)
+        files.append(str(target))
+
+    if not files:
+        raise RuntimeError("TikTok slayt görsellerinin hiçbiri indirilemedi.")
+
+    queue.put(log_event(
+        job_id, "info",
+        f"TikTok slayt gönderisi: {len(files)}/{len(image_urls)} görsel indirildi.",
+    ))
+
+    return files, title, {
+        "platform": "TikTok",
+        "title": title,
+        "uploader": uploader,
+        "uploader_id": uploader,
+        "webpage_url": url,
+        "extractor": "tiktok:photo",
+    }
+
+
 # yt-dlp hata mesajlarının sonuna eklediği, teşhis için değeri olmayan
 # yönlendirme metinleri. Mesaj kısaltılırken bunlar atılır.
 _ERROR_BOILERPLATE = re.compile(
@@ -950,6 +1131,31 @@ def download_with_ytdlp(
             "Spotify şarkısı YouTube üzerinden indirilemedi — "
             + " | ".join(spotify_errors)
         )
+
+    # ── TikTok slayt (fotoğraf) gönderisi ─────────────────────────────────────
+    # Kısa link (vt./vm.) fotoğraf mı video mu belli etmediği için önce çözülür.
+    # Ses modunda görselleri indirmenin anlamı yok: yt-dlp /video/ adresinden
+    # slaytın müziğini zaten verebiliyor, o yüzden normal akışa devredilir.
+    if _is_tiktok_url(url):
+        resolved = _resolve_tiktok_url(url)
+        photo_id = _tiktok_photo_id(resolved)
+        if photo_id:
+            video_url = resolved.replace("/photo/", "/video/", 1)
+            if _is_audio_mode(mode) or _is_thumbnail_mode(mode):
+                queue.put(log_event(
+                    job_id, "info", "TikTok slayt gönderisi — ses /video/ adresinden alınıyor.",
+                ))
+                url = video_url
+            else:
+                return _download_tiktok_photos(
+                    job_id=job_id,
+                    url=url,
+                    video_url=video_url,
+                    photo_id=photo_id,
+                    download_dir=download_dir,
+                    queue=queue,
+                    cookies_file=cookies_file,
+                )
 
     if _is_thumbnail_mode(mode):
         attempts = [
