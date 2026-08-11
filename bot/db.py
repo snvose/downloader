@@ -392,6 +392,60 @@ class Database:
             (limit,),
         )
 
+    def search_users(self, term: str, limit: int = 10) -> list[dict[str, Any]]:
+        """
+        Kullanıcı adı, ad veya ID ile arama (admin paneli).
+
+        Sayı girilirse önce tam ID eşleşmesi denenir; bulunamazsa metin
+        araması yapılır.
+        """
+        term = (term or "").strip().lstrip("@")
+        if not term:
+            return []
+
+        if term.lstrip("-").isdigit():
+            row = self.query_one(
+                f"SELECT * FROM users WHERE user_id = {self.ph}", (int(term),)
+            )
+            if row:
+                return [row]
+
+        pattern = f"%{term.lower()}%"
+        return self.query(
+            f"""SELECT * FROM users
+                WHERE LOWER(COALESCE(username, '')) LIKE {self.ph}
+                   OR LOWER(COALESCE(first_name, '')) LIKE {self.ph}
+                ORDER BY total_downloads DESC LIMIT {self.ph}""",
+            (pattern, pattern, limit),
+        )
+
+    def search_chats(self, term: str, limit: int = 10) -> list[dict[str, Any]]:
+        term = (term or "").strip()
+        if not term:
+            return []
+
+        if term.lstrip("-").isdigit():
+            row = self.query_one(
+                f"SELECT * FROM chats WHERE chat_id = {self.ph}", (int(term),)
+            )
+            if row:
+                return [row]
+
+        pattern = f"%{term.lower()}%"
+        return self.query(
+            f"""SELECT * FROM chats WHERE LOWER(COALESCE(title, '')) LIKE {self.ph}
+                ORDER BY total_downloads DESC LIMIT {self.ph}""",
+            (pattern, limit),
+        )
+
+    def user_downloads(self, user_id: int, limit: int = 5) -> list[dict[str, Any]]:
+        """Bir kullanıcının son indirmeleri (profil ekranı)."""
+        return self.query(
+            f"""SELECT platform, result, created_at, file_size FROM downloads
+                WHERE user_id = {self.ph} ORDER BY created_at DESC LIMIT {self.ph}""",
+            (user_id, limit),
+        )
+
     def top_chats(self, limit: int = 10) -> list[dict[str, Any]]:
         return self.query(
             f"""SELECT chat_id, title, chat_type, total_downloads, last_activity

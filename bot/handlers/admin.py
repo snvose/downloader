@@ -14,6 +14,7 @@ from telegram.ext import ApplicationHandlerStop, ContextTypes
 from bot import analytics
 from bot.broadcast import BroadcastJob, run_broadcast
 from bot.i18n import LANGUAGES, set_language
+from bot.live_guard import format_duration
 from bot.cookie_health import platform_cookie_status
 from bot.pending import clear_all_pending
 from bot.state import MODE_MAINTENANCE, MODE_NORMAL, MODE_SAFE
@@ -635,6 +636,124 @@ def _broadcast_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMar
     return InlineKeyboardMarkup(rows)
 
 
+# ── Kullanıcı arama / profil / ban yönetimi ──────────────────────────────────
+
+def _user_label(row: dict) -> str:
+    name = row.get("username")
+    if name:
+        return f"@{_esc(name)}"
+    return _esc(row.get("first_name") or f"ID {row.get('user_id')}")
+
+
+def _search_results_text(context: ContextTypes.DEFAULT_TYPE, term: str) -> tuple[str, InlineKeyboardMarkup]:
+    db = context.application.bot_data.get("db")
+    permissions = context.application.bot_data["permissions"]
+
+    users = db.search_users(term, limit=8) if db else []
+    chats = db.search_chats(term, limit=5) if db else []
+
+    lines = [f"<b>🔍 Arama:</b> <code>{_esc(term)}</code>", ""]
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if not users and not chats:
+        lines.append(
+            "Sonuç yok.\n\n<i>Kullanıcı adı, ad veya sayısal ID ile arayabilirsin.</i>"
+        )
+    else:
+        if users:
+            lines.append(f"<b>👤 Kullanıcılar ({len(users)})</b>")
+            for row in users:
+                uid = int(row["user_id"])
+                banned = permissions.is_user_banned(uid)
+                mark = "🚫" if banned else "✅"
+                lines.append(
+                    f"{mark} {_user_label(row)} — <b>{row.get('total_downloads', 0)}</b> indirme\n"
+                    f"    <code>{uid}</code>"
+                )
+                rows.append([InlineKeyboardButton(
+                    f"{mark} {_user_label(row)[:20]}", callback_data=f"admin|userinfo|{uid}"
+                )])
+
+        if chats:
+            lines.append(f"\n<b>💬 Sohbetler ({len(chats)})</b>")
+            for row in chats:
+                cid = int(row["chat_id"])
+                banned = permissions.is_group_banned(cid)
+                mark = "🚫" if banned else "✅"
+                title = _esc(row.get("title") or "(başlıksız)")[:30]
+                lines.append(f"{mark} <b>{title}</b> — <code>{cid}</code>")
+
+    rows.append([
+        InlineKeyboardButton("🔍 Yeni Arama", callback_data="admin|usersearch"),
+        InlineKeyboardButton("‹ Banlar", callback_data="admin|bans"),
+    ])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+def _user_info_text(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    db = context.application.bot_data.get("db")
+    permissions = context.application.bot_data["permissions"]
+    live_guard = context.application.bot_data.get("live_guard")
+
+    row = db.get_user(user_id) if db else None
+    banned = permissions.is_user_banned(user_id)
+
+    if not row:
+        lines = [
+            f"<b>👤 Kullanıcı</b> <code>{user_id}</code>",
+            "",
+            "<i>Veritabanında kaydı yok (botu hiç kullanmamış olabilir).</i>",
+            f"\nBan durumu: {'🚫 <b>Banlı</b>' if banned else '✅ Banlı değil'}",
+        ]
+    else:
+        first = datetime.fromtimestamp(row["first_seen"]).strftime("%d.%m.%Y")
+        last = datetime.fromtimestamp(row["last_activity"]).strftime("%d.%m.%Y %H:%M")
+        lines = [
+            f"<b>👤 {_user_label(row)}</b>",
+            f"<code>{user_id}</code>",
+            "",
+            f"📥 Toplam indirme: <b>{row['total_downloads']}</b>",
+            f"📅 İlk görülme: <b>{first}</b>",
+            f"🕐 Son aktivite: <b>{last}</b>",
+            f"🔔 Duyuru: <b>{'kapalı' if row['broadcast_opt_out'] else 'açık'}</b>",
+            f"🚷 Erişilemez: <b>{'evet' if row['is_blocked'] else 'hayır'}</b>",
+            f"\nBan durumu: {'🚫 <b>Banlı</b>' if banned else '✅ Banlı değil'}",
+        ]
+
+        if live_guard:
+            remaining = live_guard.ban_remaining(user_id)
+            if remaining > 0:
+                lines.append(
+                    f"⏳ Canlı yayın banı: <b>{format_duration(remaining)}</b> kaldı"
+                )
+
+        recent = db.user_downloads(user_id, 5) if db else []
+        if recent:
+            lines.append("\n<b>Son indirmeler</b>")
+            for item in recent:
+                when = datetime.fromtimestamp(item["created_at"]).strftime("%d.%m %H:%M")
+                icon = "✅" if item["result"] == "success" else "❌"
+                lines.append(f"  {icon} {_esc(item['platform'] or '—')} · <i>{when}</i>")
+
+    action = (
+        InlineKeyboardButton("✅ Banı Kaldır", callback_data=f"admin|unban|{user_id}")
+        if banned else
+        InlineKeyboardButton("🚫 Banla", callback_data=f"admin|banask|{user_id}")
+    )
+
+    rows = [[action]]
+    if live_guard and live_guard.ban_remaining(user_id) > 0:
+        rows.append([InlineKeyboardButton(
+            "⏳ Canlı Yayın Banını Kaldır", callback_data=f"admin|livewipe|{user_id}"
+        )])
+    rows.append([
+        InlineKeyboardButton("🔍 Arama", callback_data="admin|usersearch"),
+        InlineKeyboardButton("‹ Banlar", callback_data="admin|bans"),
+    ])
+
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
 # ── Ban listesi ──
 def _bans_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     permissions = context.application.bot_data["permissions"]
@@ -783,6 +902,33 @@ async def broadcast_compose_message(update: Update, context: ContextTypes.DEFAUL
         return
 
     draft = _bc_state(context)
+
+    # Kullanıcı arama modu (duyuru yazma ile aynı "bekleyen giriş" mekanizması)
+    if draft.get("awaiting_search"):
+        draft["awaiting_search"] = False
+        term = (update.message.text or "").strip()
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+
+        text, markup = _search_results_text(context, term)
+        chat_id = draft.get("search_chat_id")
+        message_id = draft.get("search_message_id")
+        if chat_id and message_id:
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id, message_id=message_id, text=text,
+                    parse_mode="HTML", reply_markup=markup,
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                await update.effective_chat.send_message(
+                    text, parse_mode="HTML", reply_markup=markup,
+                    disable_web_page_preview=True,
+                )
+        raise ApplicationHandlerStop
+
     if not draft.get("awaiting"):
         return
 
@@ -922,7 +1068,95 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if sub == "bans":
         await query.answer()
-        await _edit(query, _bans_text(context), _back_keyboard())
+        await _edit(query, _bans_text(context), InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔍 Kullanıcı Ara", callback_data="admin|usersearch")],
+            [InlineKeyboardButton("‹ Panel", callback_data="admin|panel")],
+        ]))
+        return
+
+    if sub == "usersearch":
+        draft = _bc_state(context)
+        draft["awaiting_search"] = True
+        draft["search_chat_id"] = query.message.chat_id if query.message else None
+        draft["search_message_id"] = query.message.message_id if query.message else None
+        await query.answer()
+        await _edit(
+            query,
+            "🔍 <b>Kullanıcı / sohbet ara</b>\n\n"
+            "Aranacak metni gönder:\n"
+            "• kullanıcı adı (<code>@arif</code> veya <code>arif</code>)\n"
+            "• sayısal ID (<code>8419768278</code>)\n"
+            "• grup başlığı",
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("‹ Vazgeç", callback_data="admin|bans"),
+            ]]),
+        )
+        return
+
+    if sub == "userinfo" and len(parts) >= 3:
+        try:
+            uid = int(parts[2])
+        except ValueError:
+            await query.answer("Geçersiz ID.", show_alert=True)
+            return
+        text, markup = _user_info_text(context, uid)
+        await query.answer()
+        await _edit(query, text, markup)
+        return
+
+    if sub == "banask" and len(parts) >= 3:
+        # Geri dönüşü olan ama etkili bir aksiyon: yine de onay iste.
+        try:
+            uid = int(parts[2])
+        except ValueError:
+            await query.answer("Geçersiz ID.", show_alert=True)
+            return
+        await query.answer()
+        await _edit(
+            query,
+            f"🚫 <b>Kullanıcı banlansın mı?</b>\n\n"
+            f"<code>{uid}</code>\n\n"
+            "<i>Banlanan kullanıcı botu hiç kullanamaz ve aktif indirmesi "
+            "iptal edilir. İstediğin zaman geri alabilirsin.</i>",
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Evet, banla", callback_data=f"admin|ban|{uid}"),
+                InlineKeyboardButton("‹ Vazgeç", callback_data=f"admin|userinfo|{uid}"),
+            ]]),
+        )
+        return
+
+    if sub in {"ban", "unban"} and len(parts) >= 3:
+        try:
+            uid = int(parts[2])
+        except ValueError:
+            await query.answer("Geçersiz ID.", show_alert=True)
+            return
+
+        permissions = context.application.bot_data["permissions"]
+        if sub == "ban":
+            permissions.ban_user(uid)
+            manager.cancel_user_job(uid)
+            await query.answer(f"{uid} banlandı.")
+        else:
+            permissions.unban_user(uid)
+            await query.answer(f"{uid} banı kaldırıldı.")
+
+        text, markup = _user_info_text(context, uid)
+        await _edit(query, text, markup)
+        return
+
+    if sub == "livewipe" and len(parts) >= 3:
+        try:
+            uid = int(parts[2])
+        except ValueError:
+            await query.answer("Geçersiz ID.", show_alert=True)
+            return
+        guard = context.application.bot_data.get("live_guard")
+        if guard:
+            guard.clear(uid)
+        await query.answer("Canlı yayın banı kaldırıldı.")
+        text, markup = _user_info_text(context, uid)
+        await _edit(query, text, markup)
         return
 
     if sub == "analytics":
