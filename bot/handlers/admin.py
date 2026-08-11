@@ -18,7 +18,6 @@ from bot.live_guard import format_duration
 from bot.cookie_health import platform_cookie_status
 from bot.pending import clear_all_pending
 from bot.state import MODE_MAINTENANCE, MODE_NORMAL, MODE_SAFE
-from bot.storage import read_json
 
 
 logger = logging.getLogger("downloader")
@@ -289,24 +288,6 @@ def _language_keyboard(current: str) -> InlineKeyboardMarkup:
         rows.append(row)
     rows.append([InlineKeyboardButton("‹ Panel", callback_data="admin|panel")])
     return InlineKeyboardMarkup(rows)
-
-
-# ── İstatistik görünümü ──
-def _stats_text(context: ContextTypes.DEFAULT_TYPE) -> str:
-    config = context.application.bot_data["config"]
-    data = read_json(config.data_dir / "usage_stats.json", {})
-    plats = data.get("platforms", {}) if isinstance(data, dict) else {}
-    plat_lines = "\n".join(
-        f"  • {name}: <b>{count}</b>"
-        for name, count in sorted(plats.items(), key=lambda x: -x[1])
-    ) or "  • —"
-    return (
-        "<b>📊 İstatistikler</b>\n\n"
-        f"Toplam indirme: <b>{data.get('total_downloads', 0)}</b>\n"
-        f"Başarısız: <b>{data.get('failed_downloads', 0)}</b>\n"
-        f"İptal edilen: <b>{data.get('cancelled_downloads', 0)}</b>\n\n"
-        f"<b>Platform dağılımı</b>\n{plat_lines}"
-    )
 
 
 def _back_keyboard() -> InlineKeyboardMarkup:
@@ -1152,9 +1133,12 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _edit(query, _panel_text(context), _panel_keyboard(state))
         return
 
+    # ESKİ CALLBACK: "📊 İstatistik" butonu "📈 Analitik" ile değiştirildi.
+    # Sohbet geçmişindeki eski panel mesajlarından hâlâ tıklanabilir; ölü
+    # ekran göstermek yerine yeni ekrana yönlendiriyoruz.
     if sub == "stats":
         await query.answer()
-        await _edit(query, _stats_text(context), _back_keyboard())
+        await _edit(query, _analytics_text(context), _analytics_keyboard())
         return
 
     if sub == "status":

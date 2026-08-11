@@ -11,7 +11,6 @@ from bot.emoji_manager import (
     SLOT_DEFS,
     assigned_count,
     category_for,
-    eb,
     em,
     ensure_file,
     load_slots,
@@ -43,14 +42,29 @@ def _render_emoji_page(page: int, last_id: str | None = None) -> tuple[str, Inli
     assigned = assigned_count()
 
     lines = [
-        f"<b>{em('btn_emoji')} Premium Emoji Yönetimi</b>",
-        f"<code>[{_progress_bar(assigned, total)}]</code> <b>{assigned}/{total}</b> atandı",
+        f"<b>🎨 Premium Emoji Yönetimi</b>",
+        f"<code>[{_progress_bar(assigned, total)}]</code> <b>{assigned}/{total}</b> slot özelleştirildi",
+        "",
     ]
+
+    # Nasıl çalıştığı her zaman görünür — admin panele girip ne yapacağını
+    # bilemeden bakakalmasın.
     if last_id:
-        lines.append(f"🎯 Seçili ID: <code>{esc(last_id)}</code> — bir slota dokun.")
+        lines.append(
+            f"🎯 <b>Elindeki emoji:</b> <tg-emoji emoji-id=\"{esc(last_id)}\">✨</tg-emoji> "
+            f"<code>{esc(last_id)}</code>\n"
+            "👇 Aşağıdan bir slota dokun, oraya atansın."
+        )
     else:
-        lines.append("💡 Atamak için önce bana bir premium emoji gönder.")
+        lines.append(
+            "💡 <b>Nasıl kullanılır?</b>\n"
+            "1️⃣ Bana bir <b>premium emoji</b> gönder (Telegram Premium gerekir)\n"
+            "2️⃣ Aşağıdaki listeden hangi yerde görünmesini istiyorsan ona dokun\n"
+            "3️⃣ ♻️ ile o slotu varsayılana döndürebilirsin"
+        )
+
     lines.append("")
+    lines.append("<i>Her satır: emojinin botta NEREDE görüneceğini anlatır.</i>")
 
     rows: list[list[InlineKeyboardButton]] = []
     current_cat = None
@@ -60,11 +74,22 @@ def _render_emoji_page(page: int, last_id: str | None = None) -> tuple[str, Inli
         if cat != current_cat:
             current_cat = cat
             lines.append(f"\n<b>▸ {esc(cat)}</b>")
+
         custom_id = (data.get(key, {}) or {}).get("custom_id")
         mark = "✅" if custom_id else "⬜"
-        lines.append(f"{mark} <b>#{sid:02d}</b> {em(key)} <code>{key}</code> — {esc(ctx)}")
+        state = "özel" if custom_id else "varsayılan"
+
+        # Canlı önizleme: solda o an kullanılan emoji, sağda nerede göründüğü.
+        lines.append(
+            f"{mark} {em(key)} <b>{esc(ctx)}</b>\n"
+            f"     <i>{state}</i> · <code>#{sid:02d}</code>"
+        )
+
+        # Buton metni parse_mode desteklemediği için fallback emoji gösterilir.
         rows.append([
-            InlineKeyboardButton(f"{mark} #{sid:02d} {fb} {ctx[:22]}", callback_data=f"emoji|set|{sid}|{page}"),
+            InlineKeyboardButton(
+                f"{mark} {fb} {ctx[:24]}", callback_data=f"emoji|set|{sid}|{page}"
+            ),
             InlineKeyboardButton("♻️", callback_data=f"emoji|reset|{sid}|{page}"),
         ])
 
@@ -78,7 +103,7 @@ def _render_emoji_page(page: int, last_id: str | None = None) -> tuple[str, Inli
 
     rows.append([
         InlineKeyboardButton("🗑 Tümünü Sıfırla", callback_data="emoji|resetall"),
-        InlineKeyboardButton("📤 Dosya", callback_data="emoji|file"),
+        InlineKeyboardButton("📤 Yedek İndir", callback_data="emoji|file"),
     ])
     # Geri butonu admin paneline döner. Önceden "menu|owner"a gidiyordu;
     # emoji paneli /admin üzerinden açıldığı için kullanıcı farklı bir

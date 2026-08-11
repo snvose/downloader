@@ -10,12 +10,12 @@ EMOJI_FILE = BASE_DIR / "data" / "emoji_slots.json"
 
 
 SLOT_DEFS: list[tuple[int, str, str, str]] = [
-    (1, "brand", "⚡", "Bot ana marka ikonu"),
-    (2, "menu_help", "📖", "Yardım menüsü"),
-    (3, "menu_owner", "⚙️", "Owner Settings"),
-    (4, "menu_owner_link", "👤", "Owner link butonu"),
-    (5, "menu_mifix", "💬", "Topluluk linki butonu"),
-    (6, "menu_back", "‹", "Geri butonu"),
+    (1, "brand", "⚡", "/start başlığı"),
+    (2, "menu_help", "📖", "«Yardım» butonu"),
+    (3, "menu_owner", "⚙️", "«Admin Paneli» butonu"),
+    (4, "menu_owner_link", "👤", "«Owner» link butonu"),
+    (5, "menu_mifix", "💬", "«Topluluk» link butonu"),
+    (6, "menu_back", "‹", "«Geri» butonu"),
 
     (10, "icon_youtube", "▶️", "YouTube platform ikonu"),
     (11, "icon_ytmusic", "🎵", "YouTube Music platform ikonu"),
@@ -28,41 +28,35 @@ SLOT_DEFS: list[tuple[int, str, str, str]] = [
     (18, "icon_spotify", "🎧", "Spotify platform ikonu"),
     (19, "icon_link", "🔗", "Genel link ikonu"),
 
-    (30, "field_title", "🎬", "Başlık alanı"),
-    (31, "field_uploader", "👤", "Profil / kanal alanı"),
-    (32, "field_uploader_id", "🆔", "Profil ID alanı"),
-    (33, "field_duration", "⏱", "Süre alanı"),
-    (34, "field_quality", "🎛", "Kalite alanı"),
-    (35, "field_size", "💾", "Boyut alanı"),
-    (36, "field_format", "📦", "Format alanı"),
-    (37, "field_views", "👁", "İzlenme alanı"),
-    (38, "field_likes", "👍", "Beğeni alanı"),
-    (39, "field_description", "📝", "Açıklama alanı"),
-    (40, "field_platform", "🌐", "Platform alanı"),
+    (30, "field_title", "🎬", "Detaylar: başlık satırı"),
+    (31, "field_uploader", "👤", "Detaylar: kanal satırı"),
+    (32, "field_uploader_id", "🆔", "Detaylar: kanal ID satırı"),
+    (33, "field_duration", "⏱", "Detaylar: süre satırı"),
+    (34, "field_quality", "🎛", "Detaylar: kalite satırı"),
+    (35, "field_size", "💾", "Detaylar: boyut satırı"),
+    (36, "field_format", "📦", "Detaylar: format satırı"),
+    (37, "field_views", "👁", "Detaylar: izlenme satırı"),
+    (38, "field_likes", "👍", "Detaylar: beğeni satırı"),
+    (39, "field_description", "📝", "Detaylar: açıklama satırı"),
 
-    (50, "btn_info", "ℹ️", "Video bilgileri butonu"),
-    (51, "btn_desc", "📝", "Açıklama butonu"),
-    (52, "btn_source", "🔗", "Source butonu"),
-    (53, "btn_stop", "⏹", "Durdur butonu"),
-    (54, "btn_start", "▶️", "Başlat butonu"),
-    (55, "btn_refresh", "🔄", "Yenile butonu"),
-    (56, "btn_emoji", "🎨", "Emoji yönetimi butonu"),
+    (50, "btn_info", "ℹ️", "Medya altı «Detaylar» butonu"),
+    (52, "btn_source", "🔗", "Medya altı «Kaynak» butonu"),
+    (56, "btn_emoji", "🎨", "Panel «Emoji» butonu"),
 
-    (70, "status_searching", "🔎", "Link analiz ediliyor"),
-    (71, "status_preparing", "⏳", "Hazırlanıyor"),
-    (72, "status_downloading", "📥", "İndiriliyor"),
-    (73, "status_uploading", "📤", "Telegram'a yükleniyor"),
-    (74, "status_processing", "🔄", "Son işlemler"),
-    (75, "status_cancel", "🛑", "İptal"),
-    (76, "status_error", "❌", "Hata"),
-    (77, "status_done", "✅", "Başarılı"),
-
-    (90, "owner_users", "👥", "Owner kullanıcı sayısı"),
-    (91, "owner_groups", "💬", "Owner grup sayısı"),
-    (92, "owner_ban", "🚫", "Owner ban sayısı"),
-    (93, "owner_active", "⚡", "Owner aktif iş"),
-    (94, "owner_system", "🖥", "Sistem durumu"),
+    (70, "status_searching", "🔎", "«Link analiz ediliyor» mesajı"),
+    (71, "status_preparing", "⏳", "«Hazırlanıyor» mesajı"),
+    (72, "status_downloading", "📥", "İndirme ilerleme mesajı"),
+    (73, "status_uploading", "📤", "«Yükleniyor» mesajı"),
+    (74, "status_processing", "🔄", "«Son işlemler» mesajı"),
+    (75, "status_cancel", "🛑", "«İptal edildi» mesajı"),
+    (76, "status_error", "❌", "Hata mesajı"),
+    (77, "status_done", "✅", "Başarı mesajı"),
 ]
+
+# NOT: 51 (btn_desc), 53 (btn_stop), 54 (btn_start), 55 (btn_refresh),
+# 40 (field_platform) ve 90-94 (owner_*) slotları kaldırıldı. Bunlar
+# kaldırılmış "Owner Settings" menüsüne ve artık render edilmeyen butonlara
+# aitti; panelde atanabiliyor ama HİÇBİR YERDE görünmüyorlardı.
 
 
 ID_TO_SLOT = {sid: (key, fb, ctx) for sid, key, fb, ctx in SLOT_DEFS}
@@ -219,8 +213,7 @@ SLOT_CATEGORIES: list[tuple[int, int, str]] = [
     (10, 29, "Platform ikonları"),
     (30, 49, "Bilgi alanları"),
     (50, 69, "Butonlar"),
-    (70, 89, "Durum"),
-    (90, 99, "Owner"),
+    (70, 89, "Durum mesajları"),
 ]
 
 
