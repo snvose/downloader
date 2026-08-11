@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import shutil
@@ -8,8 +9,9 @@ from datetime import datetime
 
 import yt_dlp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ContextTypes
+from telegram.ext import ApplicationHandlerStop, ContextTypes
 
+from bot.broadcast import BroadcastJob, run_broadcast
 from bot.i18n import LANGUAGES, set_language
 from bot.cookie_health import platform_cookie_status
 from bot.pending import clear_all_pending
@@ -222,7 +224,10 @@ def _panel_keyboard(state) -> InlineKeyboardMarkup:
             InlineKeyboardButton("🍪 Cookie", callback_data="admin|cookie"),
         ],
         [
+            InlineKeyboardButton("📣 Duyuru", callback_data="admin|broadcast"),
             InlineKeyboardButton("🎨 Emoji", callback_data="emoji|page|0"),
+        ],
+        [
             InlineKeyboardButton("🧹 İşleri Temizle", callback_data="admin|clear"),
         ],
         [
@@ -430,6 +435,90 @@ def _cookie_log_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     return f"<b>🍪 Cookie Log</b> <i>(son {len(entries)})</i>\n\n{body}"
 
 
+# ── Duyuru (broadcast) ───────────────────────────────────────────────────────
+
+_BC_KIND_LABEL = {
+    "all": "herkes (kullanıcı + grup)",
+    "users": "yalnızca özel sohbetler",
+    "groups": "yalnızca gruplar",
+}
+
+
+def _bc_state(context: ContextTypes.DEFAULT_TYPE) -> dict:
+    """Admin'in duyuru taslağı (tek admin olduğu için uygulama genelinde tek)."""
+    return context.application.bot_data.setdefault("broadcast_compose", {})
+
+
+def _broadcast_text(context: ContextTypes.DEFAULT_TYPE) -> str:
+    db = context.application.bot_data.get("db")
+    draft = _bc_state(context)
+    kind = draft.get("kind", "all")
+
+    counts = {"all": 0, "users": 0, "groups": 0}
+    if db:
+        try:
+            counts = {k: len(db.broadcast_targets(kind=k)) for k in counts}
+        except Exception:
+            logger.exception("Duyuru hedefleri okunamadı")
+
+    lines = [
+        "<b>📣 Duyuru Gönder</b>",
+        "",
+        f"🎯 Hedef kitle: <b>{_BC_KIND_LABEL.get(kind, kind)}</b>",
+        f"👥 Ulaşılacak: <b>{counts.get(kind, 0)}</b> sohbet",
+        "",
+        f"<i>Toplam: {counts['users']} özel · {counts['groups']} grup "
+        "(duyuru kapatanlar ve engelleyenler hariç)</i>",
+        "",
+    ]
+
+    message = draft.get("text")
+    if message:
+        preview = _esc(message)
+        if len(preview) > 600:
+            preview = preview[:600] + "…"
+        lines.append("<b>📝 Mesaj önizleme</b>")
+        lines.append(f"<blockquote>{preview}</blockquote>")
+        lines.append("")
+        lines.append("Göndermeye hazır. ⬇️")
+    else:
+        lines.append(
+            "✍️ <b>Mesaj yok.</b>\n"
+            "<i>Aşağıdaki butona basıp duyuru metnini bana gönder. "
+            "HTML biçimlendirme (kalın, italik, link) kullanabilirsin.</i>"
+        )
+
+    return "\n".join(lines)
+
+
+def _broadcast_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
+    draft = _bc_state(context)
+    kind = draft.get("kind", "all")
+    has_text = bool(draft.get("text"))
+
+    kind_row = [
+        InlineKeyboardButton(
+            ("🔘 " if kind == k else "⚪️ ") + label,
+            callback_data=f"admin|bckind|{k}",
+        )
+        for k, label in (("all", "Herkes"), ("users", "Özel"), ("groups", "Grup"))
+    ]
+
+    rows = [kind_row]
+
+    if has_text:
+        rows.append([InlineKeyboardButton("🚀 Gönder", callback_data="admin|bcconfirm")])
+        rows.append([
+            InlineKeyboardButton("✏️ Mesajı Değiştir", callback_data="admin|bcwrite"),
+            InlineKeyboardButton("🗑 Mesajı Sil", callback_data="admin|bcclear"),
+        ])
+    else:
+        rows.append([InlineKeyboardButton("✍️ Mesaj Yaz", callback_data="admin|bcwrite")])
+
+    rows.append([InlineKeyboardButton("‹ Panel", callback_data="admin|panel")])
+    return InlineKeyboardMarkup(rows)
+
+
 # ── Ban listesi ──
 def _bans_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     permissions = context.application.bot_data["permissions"]
@@ -499,6 +588,124 @@ def _usage_text(context: ContextTypes.DEFAULT_TYPE, page: int, page_size: int = 
 
     rows = [nav, [InlineKeyboardButton("‹ Panel", callback_data="admin|panel")]]
     return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+async def _start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Duyuru gönderimini başlatır ve panelde canlı ilerleme gösterir."""
+    query = update.callback_query
+    app = context.application
+    draft = _bc_state(context)
+    db = app.bot_data.get("db")
+
+    text = draft.get("text")
+    kind = draft.get("kind", "all")
+
+    if not text or not db:
+        await query.answer("Gönderilecek mesaj yok.", show_alert=True)
+        return
+
+    # Aynı anda tek duyuru — ikinci kez basılırsa yenisi başlamasın.
+    running = app.bot_data.get("broadcast_job")
+    if running and running.running:
+        await query.answer("Zaten bir duyuru gönderiliyor.", show_alert=True)
+        return
+
+    targets = await asyncio.to_thread(db.broadcast_targets, kind=kind)
+    job = BroadcastJob(text=text, targets=targets, kind=kind)
+    app.bot_data["broadcast_job"] = job
+
+    await query.answer("Gönderim başladı.")
+
+    stop_markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🛑 Durdur", callback_data="admin|bcstop"),
+    ]])
+    await _edit(query, job.progress_text(), stop_markup)
+
+    async def on_progress(current: BroadcastJob) -> None:
+        markup = stop_markup if current.running else _back_keyboard()
+        await _edit(query, current.progress_text(), markup)
+
+    async def runner() -> None:
+        try:
+            await run_broadcast(app, job, db=db, on_progress=on_progress)
+        except Exception:
+            logger.exception("Duyuru gönderimi çöktü")
+        finally:
+            # Taslağı temizle ki yanlışlıkla ikinci kez gönderilmesin.
+            draft.pop("text", None)
+            draft["awaiting"] = False
+            try:
+                await _edit(
+                    query,
+                    job.summary_text(),
+                    InlineKeyboardMarkup([[
+                        InlineKeyboardButton("📣 Yeni Duyuru", callback_data="admin|broadcast"),
+                        InlineKeyboardButton("‹ Panel", callback_data="admin|panel"),
+                    ]]),
+                )
+            except Exception:
+                logger.exception("Duyuru özeti gösterilemedi")
+
+    asyncio.create_task(runner())
+
+
+async def broadcast_compose_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Admin duyuru metnini yazdığında yakalar.
+
+    "✍️ Mesaj Yaz" sonrası admin'in ÖZEL sohbete yazdığı ilk mesaj taslak
+    olarak alınır. Bu handler diğer handler'lardan önce çalışır ve link
+    işleyicisinin bu mesajı indirme isteği sanmasını engeller.
+    """
+    if not update.effective_user or not update.message:
+        return
+
+    if not _admin_ok(update, context):
+        return
+
+    if update.effective_chat and update.effective_chat.type != "private":
+        return
+
+    draft = _bc_state(context)
+    if not draft.get("awaiting"):
+        return
+
+    text = update.message.text_html or update.message.text or ""
+    if not text.strip():
+        return
+
+    draft["text"] = text
+    draft["awaiting"] = False
+
+    # Taslağı aldık; panel mesajını güncelle ve admin'in yazdığı mesajı sil
+    # (sohbet temiz kalsın, duyuru metni ortalıkta durmasın).
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    chat_id = draft.get("panel_chat_id")
+    message_id = draft.get("panel_message_id")
+    if chat_id and message_id:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=_broadcast_text(context),
+                parse_mode="HTML",
+                reply_markup=_broadcast_keyboard(context),
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            logger.warning("Duyuru paneli güncellenemedi, yeni mesaj gönderiliyor")
+            await update.effective_chat.send_message(
+                _broadcast_text(context),
+                parse_mode="HTML",
+                reply_markup=_broadcast_keyboard(context),
+                disable_web_page_preview=True,
+            )
+
+    raise ApplicationHandlerStop
 
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -600,6 +807,94 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if sub == "bans":
         await query.answer()
         await _edit(query, _bans_text(context), _back_keyboard())
+        return
+
+    # ── Duyuru ────────────────────────────────────────────────────────────────
+    if sub == "broadcast":
+        await query.answer()
+        await _edit(query, _broadcast_text(context), _broadcast_keyboard(context))
+        return
+
+    if sub == "bckind" and len(parts) >= 3:
+        if parts[2] in {"all", "users", "groups"}:
+            _bc_state(context)["kind"] = parts[2]
+        await query.answer()
+        await _edit(query, _broadcast_text(context), _broadcast_keyboard(context))
+        return
+
+    if sub == "bcwrite":
+        draft = _bc_state(context)
+        draft["awaiting"] = True
+        draft["panel_chat_id"] = query.message.chat_id if query.message else None
+        draft["panel_message_id"] = query.message.message_id if query.message else None
+        await query.answer()
+        await _edit(
+            query,
+            "✍️ <b>Duyuru metnini gönder</b>\n\n"
+            "Şimdi bana duyuru mesajını yaz — bir sonraki mesajın taslak olarak "
+            "alınacak.\n\n"
+            "<i>HTML kullanabilirsin: &lt;b&gt;kalın&lt;/b&gt;, &lt;i&gt;italik&lt;/i&gt;, "
+            "&lt;a href=\"...\"&gt;link&lt;/a&gt;</i>",
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("‹ Vazgeç", callback_data="admin|bccancelwrite"),
+            ]]),
+        )
+        return
+
+    if sub == "bccancelwrite":
+        _bc_state(context)["awaiting"] = False
+        await query.answer("Vazgeçildi.")
+        await _edit(query, _broadcast_text(context), _broadcast_keyboard(context))
+        return
+
+    if sub == "bcclear":
+        draft = _bc_state(context)
+        draft.pop("text", None)
+        draft["awaiting"] = False
+        await query.answer("Mesaj silindi.")
+        await _edit(query, _broadcast_text(context), _broadcast_keyboard(context))
+        return
+
+    if sub == "bcconfirm":
+        draft = _bc_state(context)
+        if not draft.get("text"):
+            await query.answer("Önce bir mesaj yaz.", show_alert=True)
+            return
+
+        db = context.application.bot_data.get("db")
+        kind = draft.get("kind", "all")
+        count = len(db.broadcast_targets(kind=kind)) if db else 0
+
+        if not count:
+            await query.answer("Bu hedef kitlede kimse yok.", show_alert=True)
+            return
+
+        await query.answer()
+        await _edit(
+            query,
+            f"🚀 <b>Duyuru gönderilsin mi?</b>\n\n"
+            f"🎯 Hedef: <b>{_BC_KIND_LABEL.get(kind, kind)}</b>\n"
+            f"👥 Alıcı: <b>{count}</b> sohbet\n"
+            f"⏱ Tahmini süre: <b>~{max(1, count // 20)} saniye</b>\n\n"
+            "<i>Gönderim başladıktan sonra durdurabilirsin.</i>",
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Evet, gönder", callback_data="admin|bcsend"),
+                InlineKeyboardButton("‹ Vazgeç", callback_data="admin|broadcast"),
+            ]]),
+        )
+        return
+
+    if sub == "bcsend":
+        await _start_broadcast(update, context)
+        return
+
+    if sub == "bcstop":
+        job = context.application.bot_data.get("broadcast_job")
+        if job and job.running:
+            job.cancelled = True
+            await query.answer("Durduruluyor...")
+        else:
+            await query.answer("Aktif gönderim yok.")
         return
 
     if sub == "close":

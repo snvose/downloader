@@ -12,6 +12,7 @@ from .emoji_manager import ensure_file
 from .handlers.admin import (
     admin_command,
     admin_callback,
+    broadcast_compose_message,
     banid_command,
     basla_command,
     dur_command,
@@ -593,6 +594,15 @@ def build_application(config: Config) -> Application:
     # admin mod butonları (Safe/Maintenance) — diğer callback'lerden önce
     app.add_handler(CallbackQueryHandler(admin_callback, pattern=r"^admin\|"))
     app.add_handler(CallbackQueryHandler(button_handler))
+
+    # Duyuru taslağı: admin "Mesaj Yaz" dedikten sonraki mesajı yakalar.
+    # group=-1 → link handler'dan ÖNCE çalışır, yoksa duyuru metni indirme
+    # isteği sanılırdı.
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+                       broadcast_compose_message),
+        group=-1,
+    )
 
     app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, link_handler), group=0)
     app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, emoji_detect_message), group=1)
