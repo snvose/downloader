@@ -17,6 +17,7 @@ from bot.i18n import LANGUAGES, set_language
 from bot.live_guard import format_duration
 from bot.cookie_health import platform_cookie_status
 from bot.pending import clear_all_pending
+from bot.safe_message import safe_reply
 from bot.state import MODE_MAINTENANCE, MODE_NORMAL, MODE_SAFE
 
 
@@ -44,7 +45,7 @@ async def dur_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     permissions.set_bot_enabled(False)
     manager.shutdown()
 
-    await update.message.reply_text("Bot durduruldu. Aktif işler iptal edildi.")
+    await safe_reply(update.message, "Bot durduruldu. Aktif işler iptal edildi.")
 
 
 async def basla_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -54,7 +55,7 @@ async def basla_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     permissions = context.application.bot_data["permissions"]
     permissions.set_bot_enabled(True)
 
-    await update.message.reply_text("Bot başlatıldı.")
+    await safe_reply(update.message, "Bot başlatıldı.")
 
 
 async def banid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -62,13 +63,13 @@ async def banid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if not context.args:
-        await update.message.reply_text("Kullanım: /banid USER_ID")
+        await safe_reply(update.message, "Kullanım: /banid USER_ID")
         return
 
     try:
         user_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("USER_ID sayısal olmalı.")
+        await safe_reply(update.message, "USER_ID sayısal olmalı.")
         return
 
     permissions = context.application.bot_data["permissions"]
@@ -77,7 +78,7 @@ async def banid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     manager = context.application.bot_data["process_manager"]
     manager.cancel_user_job(user_id)
 
-    await update.message.reply_text(f"Banlandı: {user_id}")
+    await safe_reply(update.message, f"Banlandı: {user_id}")
 
 
 async def unbanid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -85,19 +86,19 @@ async def unbanid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if not context.args:
-        await update.message.reply_text("Kullanım: /unbanid USER_ID")
+        await safe_reply(update.message, "Kullanım: /unbanid USER_ID")
         return
 
     try:
         user_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("USER_ID sayısal olmalı.")
+        await safe_reply(update.message, "USER_ID sayısal olmalı.")
         return
 
     permissions = context.application.bot_data["permissions"]
     permissions.unban_user(user_id)
 
-    await update.message.reply_text(f"Ban kaldırıldı: {user_id}")
+    await safe_reply(update.message, f"Ban kaldırıldı: {user_id}")
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -135,7 +136,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         f"Download dizini:\n<code>{config.download_dir}</code>"
     )
 
-    await update.message.reply_text(
+    await safe_reply(update.message, 
         text,
         parse_mode="HTML",
         disable_web_page_preview=True,
@@ -151,7 +152,7 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # olmayan öksüz format menüleri kalıyordu.
     cleared = await clear_all_pending(context.application)
     context.application.bot_data["playlist_sessions"] = {}
-    await update.message.reply_text(f"Tüm işler temizlendi. ({cleared} menü kaldırıldı)")
+    await safe_reply(update.message, f"Tüm işler temizlendi. ({cleared} menü kaldırıldı)")
 
 
 # ── /admin paneli ────────────────────────────────────────────────────────────
@@ -1069,7 +1070,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not update.message or not _admin_ok(update, context):
         return
     state = context.application.bot_data["bot_state"]
-    await update.message.reply_text(
+    await safe_reply(update.message, 
         _panel_text(context),
         parse_mode="HTML",
         reply_markup=_panel_keyboard(state),
