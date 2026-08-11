@@ -1,6 +1,6 @@
 # Downloader Bot
 
-27 platformdan medya indirip Telegram'a yükleyen, çoklu işlem tabanlı bir
+28 platformdan medya indirip Telegram'a yükleyen, çoklu işlem tabanlı bir
 Telegram botu. Sade ve profesyonel bir arayüze, kalıcı önbelleğe, mod
 sistemine ve yönetici paneline sahiptir.
 

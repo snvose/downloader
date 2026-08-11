@@ -44,16 +44,48 @@ def human_duration(seconds: Any) -> str:
 
 
 def platform_icon(platform: str) -> str:
+    """
+    Medya altında gösterilen platform ikonu.
+
+    İlk gruptakiler premium emoji slotu olan platformlardır (admin
+    /admin → Emoji ile değiştirebilir). Faz 2'de eklenen platformların
+    slotu yok; onlar için sabit emoji kullanılır — önceden hepsi genel
+    link ikonuna düşüyordu ve hangi platform olduğu belli olmuyordu.
+    """
+    slotted = {
+        "YouTube": "icon_youtube",
+        "YouTube Music": "icon_ytmusic",
+        "Instagram": "icon_instagram",
+        "TikTok": "icon_tiktok",
+        "Facebook": "icon_facebook",
+        "X/Twitter": "icon_twitter",
+        "Reddit": "icon_reddit",
+        "Pinterest": "icon_pinterest",
+        "Spotify": "icon_spotify",
+    }
+    if platform in slotted:
+        return em(slotted[platform])
+
     return {
-        "YouTube": em("icon_youtube"),
-        "YouTube Music": em("icon_ytmusic"),
-        "Instagram": em("icon_instagram"),
-        "TikTok": em("icon_tiktok"),
-        "Facebook": em("icon_facebook"),
-        "X/Twitter": em("icon_twitter"),
-        "Reddit": em("icon_reddit"),
-        "Pinterest": em("icon_pinterest"),
-        "Spotify": em("icon_spotify"),
+        "SoundCloud": "🔊",
+        "Vimeo": "🎬",
+        "Dailymotion": "🎞",
+        "Twitch": "🎮",
+        "Bluesky": "🦋",
+        "Tumblr": "📝",
+        "VK": "🇷🇺",
+        "Streamable": "🎥",
+        "Rutube": "🇷🇺",
+        "Bilibili": "🇨🇳",
+        "Imgur": "🖼",
+        "Bandcamp": "🎸",
+        "Mixcloud": "🎚",
+        "Rumble": "▶️",
+        "Newgrounds": "🎨",
+        "Loom": "💼",
+        "OK.ru": "🟠",
+        "Snapchat": "👻",
+        "Kick": "🥊",
     }.get(platform, em("icon_link"))
 
 
@@ -65,22 +97,45 @@ def start_text(bot_name: str) -> str:
 
 
 def help_text() -> str:
+    """
+    Yardım ekranı.
+
+    Platform listesi bot/utils.py'deki gerçek desteğe göre gruplanmıştır.
+    Yeni platform eklenirse SUPPORTED_DOMAINS ile birlikte burası da
+    güncellenmelidir.
+    """
     return (
         f"<b>{em('menu_help')} {t('help_title')}</b>\n\n"
-        f"<b>{t('help_platforms')}</b>\n"
-        f"{em('icon_youtube')} YouTube\n"
-        f"{em('icon_ytmusic')} YouTube Music\n"
-        f"{em('icon_instagram')} Instagram\n"
+        f"{t('help_intro')}\n\n"
+
+        f"<b>{t('help_group_video')}</b>\n"
+        f"{em('icon_youtube')} YouTube · {em('icon_instagram')} Instagram · "
         f"{em('icon_tiktok')} TikTok\n"
-        f"{em('icon_facebook')} Facebook\n"
-        f"{em('icon_twitter')} X / Twitter\n"
+        f"{em('icon_facebook')} Facebook · {em('icon_twitter')} X/Twitter · "
         f"{em('icon_reddit')} Reddit\n"
-        f"{em('icon_pinterest')} Pinterest\n"
-        f"{em('icon_spotify')} Spotify\n\n"
+        f"{em('icon_pinterest')} Pinterest · 🎬 Vimeo · 🎞 Dailymotion\n"
+        f"🎮 Twitch · 🦋 Bluesky · 📝 Tumblr · 👻 Snapchat\n"
+        f"🇷🇺 VK · 🇷🇺 Rutube · 🇨🇳 Bilibili · ▶️ Rumble\n"
+        f"🎥 Streamable · 🖼 Imgur · 🎨 Newgrounds · 💼 Loom\n"
+        f"🟠 OK.ru · 🥊 Kick\n\n"
+
+        f"<b>{t('help_group_audio')}</b>\n"
+        f"{em('icon_ytmusic')} YouTube Music · {em('icon_spotify')} Spotify\n"
+        f"🔊 SoundCloud · 🎸 Bandcamp · 🎚 Mixcloud\n\n"
+
+        f"<b>{t('help_group_features')}</b>\n"
+        f"🎬 {t('help_feat_quality')}\n"
+        f"🎧 {t('help_feat_audio')}\n"
+        f"🔤 {t('help_feat_subtitle')}\n"
+        f"📁 {t('help_feat_playlist')}\n\n"
+
         f"<b>{t('help_commands')}</b>\n"
         f"<code>/ses link</code> — {t('help_ses')}\n"
-        f"<code>/cancel</code> — {t('help_cancel')}\n\n"
-        f"{em('icon_spotify')} {t('help_spotify')}"
+        f"<code>/cancel</code> — {t('help_cancel')}\n"
+        f"<code>/duyurular</code> — {t('help_duyurular')}\n\n"
+
+        f"{em('icon_spotify')} {t('help_spotify')}\n"
+        f"🔴 {t('help_no_live')}"
     )
 
 
