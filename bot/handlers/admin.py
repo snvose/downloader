@@ -227,6 +227,7 @@ def _panel_keyboard(state) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("📣 Duyuru", callback_data="admin|broadcast"),
+            InlineKeyboardButton("📜 Log", callback_data="admin|logs|live|all"),
             InlineKeyboardButton("🎨 Emoji", callback_data="emoji|page|0"),
         ],
         [
@@ -634,6 +635,119 @@ def _broadcast_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMar
 
     rows.append([InlineKeyboardButton("‹ Panel", callback_data="admin|panel")])
     return InlineKeyboardMarkup(rows)
+
+
+# ── Log görüntüleyici ────────────────────────────────────────────────────────
+
+_LOG_LEVEL_ICON = {
+    "ERROR": "🔴",
+    "CRITICAL": "🔴",
+    "WARNING": "🟠",
+    "INFO": "⚪️",
+    "DEBUG": "⚫️",
+}
+
+# Panelde gösterilecek log kanalları
+_LOG_SOURCES = {
+    "live": ("Canlı akış (bellek)", None, "🔴 Canlı"),
+    "bot": ("bot.log", "bot.log", "📄 Bot"),
+    "downloads": ("downloads.log", "downloads.log", "📥 İndirme"),
+    "cookie": ("cookie_errors.log", "cookie_errors.log", "🍪 Cookie"),
+}
+
+
+def _read_log_tail(path, lines: int = 25) -> list[str]:
+    """Dosyanın son N satırını okur (büyük dosyayı tamamen belleğe almadan)."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+
+    # Son ~60 KB yeterli: 25 satır için fazlasıyla.
+    chunk = min(size, 60_000)
+    try:
+        with path.open("rb") as fh:
+            fh.seek(size - chunk)
+            data = fh.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return []
+
+    return [ln for ln in data.splitlines() if ln.strip()][-lines:]
+
+
+def _logs_text(context: ContextTypes.DEFAULT_TYPE, source: str = "live", level: str = "all") -> str:
+    config = context.application.bot_data["config"]
+    label, filename, _short = _LOG_SOURCES.get(source, _LOG_SOURCES["live"])
+
+    if filename:
+        entries = _read_log_tail(config.log_dir / filename, 40)
+    else:
+        from bot.log_buffer import last_lines
+        entries = last_lines(40)
+
+    # Seviye filtresi
+    if level != "all":
+        entries = [e for e in entries if f"| {level} " in e or f"| {level}|" in e]
+
+    if not entries:
+        # Mesaj duruma göre değişir: süzgeç sonuç vermediyse "kayıt yok"
+        # demek yanıltıcı olur (dosya dolu ama o seviyede satır yok).
+        if level != "all":
+            return (
+                f"<b>📜 Log — {label}</b>\n\n"
+                f"<i>Bu kanalda <b>{level}</b> seviyesinde kayıt yok.</i> ✅\n\n"
+                "Tüm satırları görmek için «Hepsi» süzgecini seç."
+            )
+        return (
+            f"<b>📜 Log — {label}</b>\n\n"
+            "<i>Kayıt yok — bu kanala henüz hiçbir şey yazılmamış.</i>"
+        )
+
+    entries = entries[-15:]
+    body_parts = []
+    for line in entries:
+        icon = ""
+        for name, symbol in _LOG_LEVEL_ICON.items():
+            if f"| {name} " in line or f"| {name}|" in line:
+                icon = symbol + " "
+                break
+        # Uzun satırları kırp — Telegram mesaj sınırı 4096
+        trimmed = line if len(line) <= 220 else line[:220] + "…"
+        body_parts.append(f"{icon}<code>{_esc(trimmed)}</code>")
+
+    filter_note = "" if level == "all" else f" · süzgeç: <b>{level}</b>"
+    return (
+        f"<b>📜 Log — {label}</b> <i>(son {len(entries)}{filter_note})</i>\n\n"
+        + "\n\n".join(body_parts)
+    )
+
+
+def _logs_keyboard(source: str = "live", level: str = "all") -> InlineKeyboardMarkup:
+    source_row = [
+        InlineKeyboardButton(
+            ("• " if source == key else "") + short,
+            callback_data=f"admin|logs|{key}|{level}",
+        )
+        for key, (_label, _file, short) in _LOG_SOURCES.items()
+    ]
+
+    level_row = [
+        InlineKeyboardButton(
+            ("• " if level == key else "") + name,
+            callback_data=f"admin|logs|{source}|{key}",
+        )
+        for key, name in (("all", "Hepsi"), ("ERROR", "🔴 Hata"), ("WARNING", "🟠 Uyarı"))
+    ]
+
+    return InlineKeyboardMarkup([
+        source_row,
+        level_row,
+        [
+            InlineKeyboardButton("📤 Dosya İndir", callback_data=f"admin|logfile|{source}"),
+            InlineKeyboardButton("🔄 Yenile", callback_data=f"admin|logs|{source}|{level}"),
+        ],
+        [InlineKeyboardButton("‹ Panel", callback_data="admin|panel")],
+    ])
 
 
 # ── Kullanıcı arama / profil / ban yönetimi ──────────────────────────────────
@@ -1072,6 +1186,36 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             [InlineKeyboardButton("🔍 Kullanıcı Ara", callback_data="admin|usersearch")],
             [InlineKeyboardButton("‹ Panel", callback_data="admin|panel")],
         ]))
+        return
+
+    if sub == "logs":
+        source = parts[2] if len(parts) > 2 else "live"
+        level = parts[3] if len(parts) > 3 else "all"
+        if source not in _LOG_SOURCES:
+            source = "live"
+        await query.answer()
+        await _edit(query, _logs_text(context, source, level), _logs_keyboard(source, level))
+        return
+
+    if sub == "logfile" and len(parts) >= 3:
+        source = parts[2]
+        label, filename, _short = _LOG_SOURCES.get(source, (None, None, None))
+        if not filename:
+            await query.answer("Bu kanal bellekte tutuluyor, dosyası yok.", show_alert=True)
+            return
+
+        path = context.application.bot_data["config"].log_dir / filename
+        if not path.exists() or path.stat().st_size == 0:
+            await query.answer("Dosya boş veya yok.", show_alert=True)
+            return
+
+        await query.answer("Gönderiliyor...")
+        try:
+            with path.open("rb") as fh:
+                await query.message.reply_document(document=fh, filename=filename)
+        except Exception as exc:
+            logger.warning("Log dosyası gönderilemedi: %s", exc)
+            await query.answer("Dosya gönderilemedi.", show_alert=True)
         return
 
     if sub == "usersearch":
