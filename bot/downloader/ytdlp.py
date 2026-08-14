@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import re
 import shutil
@@ -150,6 +151,10 @@ def _download_with_gallery_dl(
     files = collect_files(download_dir)
     if not files:
         raise RuntimeError("gallery-dl dosya indirmedi.")
+
+    # gallery-dl'in getirdiği videolar da aynı uyumluluk katmanından geçer;
+    # bu dal atlandığında yedek yolla gelen dosyalar hâlâ vp9/av1 kalıyordu.
+    files = _ensure_playable(files, job_id=job_id, queue=queue)
 
     info = {
         "platform": platform_name(url),
@@ -304,6 +309,10 @@ def _is_social_url(url: str) -> bool:
 
 def _is_spotify_url(url: str) -> bool:
     return "spotify" in (urlparse(url).netloc or "").lower()
+
+
+def _is_instagram_url(url: str) -> bool:
+    return "instagram" in (urlparse(url).netloc or "").lower()
 
 
 def _spotify_embed_data(url: str) -> dict[str, Any]:
@@ -752,6 +761,138 @@ def short_error(error: Any, limit: int = 300) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+# Her cihazda (özellikle macOS QuickTime/Safari ve iOS) sorunsuz açılan
+# birleşim. Bunların dışındaki her şey mp4 kabında "codec desteklenmiyor"
+# hatası veriyor: dosya açılıyor ama oynatılmıyor.
+_COMPATIBLE_VCODECS = {"h264", "avc1"}
+_COMPATIBLE_ACODECS = {"aac", "mp4a"}
+
+
+def _probe_streams(path: Path) -> tuple[str, str] | None:
+    """Videonun (video_codec, ses_codec) çiftini döndürür. Okunamazsa None."""
+    if not shutil.which("ffprobe"):
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "stream=codec_type,codec_name",
+                "-of", "json", str(path),
+            ],
+            capture_output=True, text=True, timeout=60,
+        )
+        streams = json.loads(result.stdout or "{}").get("streams") or []
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+    vcodec = acodec = ""
+    for stream in streams:
+        name = str(stream.get("codec_name") or "").lower()
+        if stream.get("codec_type") == "video" and not vcodec:
+            vcodec = name
+        elif stream.get("codec_type") == "audio" and not acodec:
+            acodec = name
+    if not vcodec:
+        return None
+    return vcodec, acodec
+
+
+def _has_faststart(path: Path) -> bool:
+    """
+    mp4'te moov atomu mdat'tan önce mi? Değilse oynatıcı dosyanın tamamını
+    indirmeden başlatamıyor (Telegram'da içeriden oynatma böyle takılıyordu).
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(1024 * 512)
+    except OSError:
+        return True  # okuyamıyorsak dokunma
+    moov, mdat = head.find(b"moov"), head.find(b"mdat")
+    if moov == -1:
+        return False
+    return mdat == -1 or moov < mdat
+
+
+def _ensure_playable(files: list[str], *, job_id: str, queue: Any) -> list[str]:
+    """
+    İndirilen videoları her cihazda oynatılabilir hale getirir.
+
+    Format seçici çoğu durumda h264+aac'ı zaten getiriyor; bu katman yalnızca
+    getiremediğinde (platformda h264 sürümü hiç yoksa) devreye giren son çare.
+    Uyumlu dosyalarda transcode YAPILMAZ — 28 sn'lik bir reel'de transcode
+    ~20 sn sürüyor ve dosyayı iki katına çıkarıyor. Uyumlu ama faststart'sız
+    dosyalar yalnızca stream-copy ile yeniden paketlenir (saniyenin altında).
+    """
+    if not shutil.which("ffmpeg"):
+        return files
+
+    result: list[str] = []
+    for item in files:
+        path = Path(item)
+        if path.suffix.lower() not in VIDEO_EXTS:
+            result.append(item)
+            continue
+
+        probed = _probe_streams(path)
+        if probed is None:
+            result.append(item)
+            continue
+
+        vcodec, acodec = probed
+        video_ok = vcodec in _COMPATIBLE_VCODECS
+        audio_ok = (not acodec) or acodec in _COMPATIBLE_ACODECS
+        container_ok = path.suffix.lower() == ".mp4"
+
+        if video_ok and audio_ok and container_ok and _has_faststart(path):
+            result.append(item)
+            continue
+
+        target = path.with_name(path.stem + ".uyumlu.mp4")
+        command = ["ffmpeg", "-y", "-v", "error", "-i", str(path)]
+        if video_ok:
+            command += ["-c:v", "copy"]
+        else:
+            command += [
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-profile:v", "high", "-pix_fmt", "yuv420p",
+            ]
+        if audio_ok:
+            command += ["-c:a", "copy"]
+        else:
+            command += ["-c:a", "aac", "-b:a", "192k"]
+        command += ["-movflags", "+faststart", str(target)]
+
+        what = "yeniden paketleniyor" if (video_ok and audio_ok) else \
+            f"h264/aac'ye dönüştürülüyor ({vcodec}/{acodec or 'ses yok'})"
+        queue.put(log_event(job_id, "info", f"Video uyumluluk: {path.name} {what}."))
+
+        try:
+            subprocess.run(command, capture_output=True, timeout=1800, check=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            # Dönüştürme başarısızsa orijinali göndermek, hiç göndermemekten iyi.
+            target.unlink(missing_ok=True)
+            queue.put(log_event(
+                job_id, "warning",
+                f"Video uyumluluk dönüşümü başarısız, orijinal gönderiliyor: {short_error(exc)}",
+            ))
+            result.append(item)
+            continue
+
+        if not target.exists() or target.stat().st_size == 0:
+            target.unlink(missing_ok=True)
+            result.append(item)
+            continue
+
+        path.unlink(missing_ok=True)
+        final = path.with_suffix(".mp4")
+        if final.exists() and final != target:
+            final.unlink(missing_ok=True)
+        target.rename(final)
+        result.append(str(final))
+
+    return result
+
+
 def _clear_partial_files(download_dir: Path) -> None:
     """
     Başarısız denemeden kalan dosyaları siler.
@@ -966,11 +1107,34 @@ def _build_opts(
             f"bv*[height<={height}]+ba/b[height<={height}]/"
             f"best[height<={height}]/best"
         )
+    elif _is_instagram_url(url):
+        # Instagram'ın DASH akışları YALNIZCA vp09 sunuyor; ama numaralı
+        # (progressive) mp4 formatları h264+aac. Bu yüzden Instagram'da önce
+        # progressive denenir — hiçbir alanı (vcodec/ext/height) dolu olmadığı
+        # için codec süzgeciyle hedeflenemiyor, tek ayırt edici işaret
+        # format_id'de "dash" geçmemesi.
+        #
+        # Bu dal KASITLI olarak yalnızca Instagram'a özel: genele konulduğunda
+        # YouTube'da format 18'e (640x360) düşüyordu.
+        opts["format"] = "b[ext=mp4][format_id!*=dash]/bv*+ba/b/best"
     elif _is_social_url(url):
         opts["format"] = "bv*+ba/b/best"
     else:
         # video_best ve diğer genel durumlar
         opts["format"] = "bv*+ba/best/b"
+
+    # ── Codec tercihi (macOS/iOS uyumluluğu) ──────────────────────────────────
+    # Bu düzeltme olmadan yt-dlp'nin öntanımlı sıralaması av01 > vp9 > h264
+    # diyordu; .mp4 kabında av1+opus dosyalar üretiliyor ve macOS
+    # QuickTime/Safari ile iOS "codec desteklenmiyor" deyip oynatmıyordu.
+    #
+    # Sıra önemli:
+    #   res:1080 — 1080p'yi AŞMAYAN en iyi çözünürlük. Üst sınır şart, çünkü
+    #     YouTube'da h264 yalnızca 1080p'ye kadar var; sınırsız "res" dendiğinde
+    #     2160p vp9 kazanıyor ve dosya hem oynatılamıyor hem de aşağıdaki
+    #     ffmpeg katmanına 4K transcode yaptırıyordu.
+    #   vcodec/acodec — aynı çözünürlükte h264+aac varsa o seçilir.
+    opts["format_sort"] = ["res:1080", "vcodec:h264", "acodec:aac", "ext:mp4:m4a"]
 
     opts["merge_output_format"] = "mp4"
 
@@ -1031,6 +1195,9 @@ def _try_ytdlp_once(
     files = collect_files(download_dir, mode=mode)
     if not files:
         raise RuntimeError("İndirilen dosya bulunamadı.")
+
+    if not _is_audio_mode(mode) and not _is_thumbnail_mode(mode):
+        files = _ensure_playable(files, job_id=job_id, queue=queue)
 
     # ── Ses metadata'sı + kare kapak ──────────────────────────────────────────
     # ffmpeg'in yazdığı temel etiketlerin üzerine, kaynaktaki tam bilgiyi
