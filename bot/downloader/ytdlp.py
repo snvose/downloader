@@ -10,14 +10,16 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from http.cookiejar import MozillaCookieJar
+from urllib.error import HTTPError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 import yt_dlp
 
 from bot.downloader.metadata import apply_audio_metadata
 from bot.live_guard import info_is_live, probe_is_live
-from bot.queue_events import log_event, progress_event
+from bot.queue_events import cookie_event, log_event, progress_event
 from bot.utils import platform_name
 
 
@@ -313,6 +315,82 @@ def _is_spotify_url(url: str) -> bool:
 
 def _is_instagram_url(url: str) -> bool:
     return "instagram" in (urlparse(url).netloc or "").lower()
+
+
+# Instagram oturum durumu, TTL'li önbellek: (zaman, durum)
+# Her iş için ağ isteği atmamak ve kilitli bir hesabı sürekli dürtmemek için.
+_IG_SESSION_CACHE: tuple[float, str] = (0.0, "")
+_IG_SESSION_TTL = 15 * 60
+# Kilit bildirimi panele en fazla bu aralıkta bir düşer (sayaç şişmesin).
+_IG_CHECKPOINT_REPORTED = 0.0
+
+IG_CHECKPOINT_MESSAGE = (
+    "Instagram hesabı kilitli (checkpoint_required) — cookie'nin sahibi hesap "
+    "instagram.com/challenge/ adresinde doğrulama bekliyor. Doğrulama insan "
+    "tarafından tamamlanıp cookie yeniden dışa aktarılmadan cookie'li "
+    "Instagram indirmeleri çalışmaz."
+)
+
+
+def _instagram_session_state(cookies_file: Path | None) -> str:
+    """
+    cookies.txt'teki Instagram oturumunun durumunu döndürür.
+
+    "ok"          — oturum çalışıyor
+    "checkpoint"  — hesap kilitli, Instagram doğrulama istiyor
+    "logged_out"  — oturum tanınmıyor (giriş sayfasına yönleniyor)
+    "unknown"     — belirlenemedi (ağ hatası, cookie yok vb.)
+
+    NEDEN GEREKLİ: kilitli hesapta yt-dlp'nin gördüğü tek şey
+    "HTTP Error 400: Bad Request"; asıl sebep yanıt GÖVDESİNDE duruyor ve
+    yt-dlp onu hata metnine koymuyor. Gövde okunmadan bu durum, sıradan bir
+    ağ hatasından ayırt edilemiyordu — admin panelinde hiçbir uyarı çıkmıyor,
+    kullanıcı da "HTTP Error 400" görüyordu.
+    """
+    global _IG_SESSION_CACHE
+
+    if not cookies_file or not Path(cookies_file).exists():
+        return "unknown"
+
+    cached_at, cached = _IG_SESSION_CACHE
+    if cached and time.time() - cached_at < _IG_SESSION_TTL:
+        return cached
+
+    state = "unknown"
+    try:
+        jar = MozillaCookieJar(str(cookies_file))
+        jar.load(ignore_discard=True, ignore_expires=True)
+        opener = build_opener(HTTPCookieProcessor(jar))
+        # feed/timeline/ oturum gerektiriyor, medya kimliği istemiyor ve
+        # kilitli hesapta checkpoint gövdesini doğrudan döndürüyor.
+        request = Request(
+            "https://i.instagram.com/api/v1/feed/timeline/",
+            headers={
+                "User-Agent": HTTP_HEADERS.get("User-Agent", "Mozilla/5.0"),
+                "X-IG-App-ID": "936619743392459",
+                "Accept": "*/*",
+            },
+        )
+        try:
+            response = opener.open(request, timeout=20)
+            body = response.read(4096).decode("utf-8", "replace")
+            final_url = response.url
+        except HTTPError as exc:
+            body = exc.read(4096).decode("utf-8", "replace") if hasattr(exc, "read") else ""
+            final_url = getattr(exc, "url", "") or ""
+
+        lowered = (body or "").lower()
+        if "checkpoint_required" in lowered or "challenge_required" in lowered:
+            state = "checkpoint"
+        elif "/accounts/login" in (final_url or ""):
+            state = "logged_out"
+        elif body:
+            state = "ok"
+    except Exception:
+        state = "unknown"
+
+    _IG_SESSION_CACHE = (time.time(), state)
+    return state
 
 
 def _spotify_embed_data(url: str) -> dict[str, Any]:
@@ -1346,6 +1424,37 @@ def download_with_ytdlp(
             ("cookies", True, "normal"),
             ("cookieless", False, "normal"),
         ]
+
+    # ── Instagram: kilitli oturumda cookie'li denemeleri hiç yapma ────────────
+    # Hesap checkpoint'e düştüğünde cookie'li HER istek 400 dönüyor. Bunlar
+    # sadece boşa zaman değil; kilitli bir hesabı arka arkaya dürtmek de
+    # kötü. Reel'ler zaten cookie'siz yoldan iniyor, o yüzden cookie'li
+    # denemeleri elemek indirilebilir içeriği kaybettirmiyor.
+    if _is_instagram_url(url):
+        ig_state = _instagram_session_state(cookies_file)
+        if ig_state == "checkpoint":
+            global _IG_CHECKPOINT_REPORTED
+            queue.put(log_event(job_id, "error", IG_CHECKPOINT_MESSAGE))
+            errors.append("instagram: checkpoint_required — " + IG_CHECKPOINT_MESSAGE)
+
+            # Panele bildir. Bu, indirme sonradan cookie'siz yoldan BAŞARILI
+            # olsa bile yapılır: reel'ler cookie'siz iniyor ama /p/ gönderileri
+            # ve story'ler inmiyor, yani kilit her hâlükârda admin'in görmesi
+            # gereken bir arıza. Yalnızca hata anında raporlansaydı, kilit
+            # görünmez kalıp bütün bir gönderi türü sessizce kaybolacaktı.
+            if time.time() - _IG_CHECKPOINT_REPORTED > _IG_SESSION_TTL:
+                _IG_CHECKPOINT_REPORTED = time.time()
+                queue.put(cookie_event(
+                    job_id=job_id,
+                    platform="Instagram",
+                    reason="hesap kilitli — doğrulama gerekiyor (cookie yenilemek yetmez)",
+                    url=url,
+                    error="checkpoint_required — " + IG_CHECKPOINT_MESSAGE,
+                ))
+
+            filtered = [item for item in attempts if not item[1]]
+            if filtered:
+                attempts = filtered
 
     for label, use_cookies, format_profile in attempts:
         try:

@@ -28,6 +28,11 @@ logger = logging.getLogger("downloader")
 # yt-dlp/gallery-dl bu mesajları giriş gerektiren ya da oturumu geçersiz
 # içeriklerde döndürür.
 _COOKIE_ERROR_PATTERNS = [
+    # En başta: hesap kilidi cookie'yi yenilemekle DÜZELMEZ, önce hesapta
+    # doğrulamanın tamamlanması gerekir. Bu yüzden aşağıdaki genel
+    # kalıplardan önce yakalanmalı ki panel "cookie'yi yenile" demesin.
+    (r"checkpoint_required|challenge_required|instagram\.com/challenge",
+     "hesap kilitli — doğrulama gerekiyor (cookie yenilemek yetmez)"),
     (r"sign in to confirm", "giriş doğrulaması isteniyor"),
     (r"login required", "giriş gerekiyor"),
     (r"requested content is not available|content isn'?t available", "içerik oturumsuz görünmüyor"),

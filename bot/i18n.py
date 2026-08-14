@@ -454,6 +454,24 @@ _STRINGS: dict[str, dict[str, str]] = {
         "fr": "Aucun format de téléchargement adapté n'a été trouvé.",
         "ar": "لم يتم العثور على صيغة تنزيل مناسبة لهذا المحتوى.",
     },
+    "err_ig_checkpoint": {
+        "tr": "Instagram, botun kullandığı hesabı geçici olarak kilitledi. "
+              "Bu içerik giriş gerektirdiği için şu an indirilemiyor. "
+              "Yönetici doğrulamayı tamamladıktan sonra tekrar deneyin.",
+        "en": "Instagram has temporarily locked the account the bot uses. "
+              "This content requires login, so it can't be downloaded right now. "
+              "Try again after the admin completes verification.",
+        "ru": "Instagram временно заблокировал аккаунт бота. Этот контент требует "
+              "входа, поэтому сейчас недоступен. Повторите после проверки администратором.",
+        "de": "Instagram hat das Konto des Bots vorübergehend gesperrt. Dieser Inhalt "
+              "erfordert eine Anmeldung und ist derzeit nicht ladbar. Bitte später erneut versuchen.",
+        "es": "Instagram bloqueó temporalmente la cuenta del bot. Este contenido requiere "
+              "inicio de sesión, así que no se puede descargar ahora. Inténtalo más tarde.",
+        "fr": "Instagram a temporairement verrouillé le compte du bot. Ce contenu nécessite "
+              "une connexion et ne peut pas être téléchargé pour l'instant. Réessayez plus tard.",
+        "ar": "قام إنستغرام بقفل حساب البوت مؤقتًا. يتطلب هذا المحتوى تسجيل الدخول، "
+              "لذا لا يمكن تنزيله الآن. حاول مرة أخرى لاحقًا.",
+    },
     "err_unsupported": {
         "tr": "Bu bağlantı desteklenmiyor.", "en": "This link is not supported.",
         "ru": "Эта ссылка не поддерживается.", "de": "Dieser Link wird nicht unterstützt.",

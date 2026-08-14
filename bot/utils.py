@@ -194,6 +194,10 @@ def safe_public_error(raw: str) -> str:
     # 403'ünü yakalayıp kullanıcıya "erişim engeli" diyordu.
     if "unsupported url" in lowered:
         return t("err_unsupported")
+    # Hesap kilidi, "giriş gerekiyor"dan önce bakılır: ikisi de aynı mesajda
+    # geçebiliyor ama kullanıcıya söylenmesi gereken bu.
+    if "checkpoint_required" in lowered or "challenge_required" in lowered:
+        return t("err_ig_checkpoint")
     if "tiktok" in lowered and ("403" in lowered or "forbidden" in lowered):
         return t("err_tiktok_403")
     if "only available for registered users" in lowered:
