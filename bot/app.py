@@ -47,7 +47,7 @@ from .safe_message import is_entity_error, strip_custom_emoji
 from .sender import FloodLimitError, cleanup_old_posts, send_downloaded_files
 from .storage import increment_stat, init_runtime_files
 from .ui import cancelled_text, configure_branding, progress_text, uploading_text
-from .utils import safe_public_error
+from .utils import platform_name, safe_public_error
 # YENİ modüller: cache, chat takibi, mod yönetimi, temizlik, loglama, bildirim
 from .cache import MediaCache
 from .chats import ChatRegistry
@@ -139,7 +139,8 @@ async def handle_watchdog_kill(
         log_download,
         user_id=job.user_id, username=job.username,
         chat_id=job.chat_id, chat_title=job.chat_title,
-        chat_type=job.chat_type, platform=None,
+        chat_type=job.chat_type,
+        platform=platform_name(job.source_url),
         url=job.source_url, result=f"watchdog_{reason}",
         duration=time.time() - job.started_at,
     )
@@ -426,7 +427,8 @@ async def queue_consumer(app: Application) -> None:
                         log_download,
                         user_id=job.user_id, username=job.username,
                         chat_id=job.chat_id, chat_title=job.chat_title,
-                        chat_type=job.chat_type, platform=None,
+                        chat_type=job.chat_type,
+                        platform=platform_name(job.source_url),
                         url=job.source_url, result="live_rejected",
                         duration=time.time() - job.started_at,
                     )
@@ -446,14 +448,15 @@ async def queue_consumer(app: Application) -> None:
                 await asyncio.to_thread(
                     log_download_error,
                     url=job.source_url,
-                    platform=None,
+                    platform=platform_name(job.source_url),
                     traceback_text=str(event.get("error") or ""),
                 )
                 await asyncio.to_thread(
                     log_download,
                     user_id=job.user_id, username=job.username,
                     chat_id=job.chat_id, chat_title=job.chat_title,
-                    chat_type=job.chat_type, platform=None,
+                    chat_type=job.chat_type,
+                    platform=platform_name(job.source_url),
                     url=job.source_url, result="error",
                     duration=time.time() - job.started_at,
                 )
@@ -464,7 +467,8 @@ async def queue_consumer(app: Application) -> None:
                     await notify_admin_failure(
                         app.bot, config.admin_id,
                         summary=str(public_message)[:300] or "Bilinmeyen indirme hatası.",
-                        url=job.source_url, platform="",
+                        url=job.source_url,
+                        platform=platform_name(job.source_url),
                         user_id=job.user_id, username=job.username,
                         chat_id=job.chat_id, chat_title=job.chat_title,
                     )

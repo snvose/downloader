@@ -926,7 +926,15 @@ def _ensure_playable(files: list[str], *, job_id: str, queue: Any) -> list[str]:
             continue
 
         target = path.with_name(path.stem + ".uyumlu.mp4")
-        command = ["ffmpeg", "-y", "-v", "error", "-i", str(path)]
+        # Akışları AÇIKÇA eşle. ffmpeg'in öntanımlı seçimi her türden yalnızca
+        # BİRİNİ alıyor ve -c:s verilmediğinde gömülü altyazıyı tamamen
+        # düşürüyordu: altyazılı bir video bu katmandan geçtiğinde altyazısı
+        # siliniyordu. "?" son ek'i, o akış yoksa hata verilmemesini sağlar.
+        command = [
+            "ffmpeg", "-y", "-v", "error", "-i", str(path),
+            "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
+            "-c:s", "mov_text",
+        ]
         if video_ok:
             command += ["-c:v", "copy"]
         else:
