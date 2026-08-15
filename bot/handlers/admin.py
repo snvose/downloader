@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import re
 import shutil
 import sys
 from datetime import datetime
@@ -187,6 +188,45 @@ _MODE_SHORT = {
 }
 
 
+# Telegram'ın mesaj metni sınırı. Aşan mesaj hiç gönderilmiyor.
+_TELEGRAM_TEXT_LIMIT = 4096
+
+# HTML parse_mode'da Telegram'ın tanıdığı, kapatılması gereken etiketler.
+_HTML_TAGS = ("b", "i", "u", "s", "code", "pre", "a", "blockquote")
+
+
+def _fit(text: str) -> str:
+    """
+    Panel metnini Telegram sınırına sığdırır.
+
+    Log görünümü 15 satırı 220 karakterle kırpıyordu ama HTML kaçışı
+    (& -> &amp;) ve <code> etiketleri metni şişirebiliyor; uzun traceback
+    satırları olan bir işten sonra toplam 4096'yı aşıyor ve panel HİÇ
+    güncellenmiyordu ("Message_too_long"). Kırpma satır sınırında yapılır,
+    yarım kalan etiket atılır, açık kalan etiketler kapatılır — aksi halde
+    Telegram bu kez "can't parse entities" diyecekti.
+    """
+    if len(text) <= _TELEGRAM_TEXT_LIMIT:
+        return text
+
+    notice = "\n\n<i>… mesaj çok uzun, kırpıldı.</i>"
+    cut = text[: _TELEGRAM_TEXT_LIMIT - len(notice)]
+
+    line_break = cut.rfind("\n")
+    if line_break > len(cut) // 2:
+        cut = cut[:line_break]
+
+    # Yarım kalan etiket ("<cod") geride bırakılamaz.
+    if cut.rfind("<") > cut.rfind(">"):
+        cut = cut[: cut.rfind("<")]
+
+    for tag in _HTML_TAGS:
+        if cut.count(f"<{tag}>") + cut.count(f"<{tag} ") > cut.count(f"</{tag}>"):
+            cut += f"</{tag}>"
+
+    return cut + notice
+
+
 async def _edit(query, text: str, markup: InlineKeyboardMarkup) -> None:
     """
     Panel mesajını günceller.
@@ -196,6 +236,7 @@ async def _edit(query, text: str, markup: InlineKeyboardMarkup) -> None:
     Artık "değişiklik yok" hatası (zararsız) ayrılıyor, gerçek hatalar
     loglanıyor ve kullanıcıya uyarı gösteriliyor.
     """
+    text = _fit(text)
     try:
         await query.edit_message_text(
             text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True,
@@ -205,6 +246,22 @@ async def _edit(query, text: str, markup: InlineKeyboardMarkup) -> None:
         # Aynı içerik tekrar gönderilince Telegram hata döndürür; bu normal.
         if "not modified" in message:
             return
+
+        # HTML çözümlenemiyorsa (ör. log satırının içinden gelen bir metin
+        # etiket gibi göründüyse) panelin tamamen kaybolmasındansa biçimsiz
+        # ama okunur bir sürüm gitsin.
+        if "parse entities" in message or "parse_mode" in message:
+            try:
+                plain = html.unescape(re.sub(r"<[^>]+>", "", text))
+                await query.edit_message_text(
+                    plain[:_TELEGRAM_TEXT_LIMIT],
+                    reply_markup=markup,
+                    disable_web_page_preview=True,
+                )
+                return
+            except Exception:
+                pass
+
         logger.warning("Admin paneli güncellenemedi: %s", exc)
         try:
             await query.answer(
