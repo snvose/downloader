@@ -250,6 +250,43 @@ def _write_mp4(path: Path, tags: dict[str, str], cover: Path | None) -> None:
     audio.save()
 
 
+def _write_flac(path: Path, tags: dict[str, str], cover: Path | None) -> None:
+    """
+    FLAC'a Vorbis yorumları ve kapak yazar.
+
+    mutagen'in genel arayüzü FLAC'ta etiketleri yazıyor ama kapağı YAZMIYOR:
+    FLAC kapağı ayrı bir PICTURE bloğu, sözlüğe atanamıyor. Bu yüzden FLAC'ın
+    kendi yazıcısı var — aksi halde flac dosyaları kapaksız çıkıyordu.
+    """
+    from mutagen.flac import FLAC, Picture
+
+    audio = FLAC(str(path))
+
+    mapping = {
+        "title": "title",
+        "artist": "artist",
+        "album_artist": "albumartist",
+        "album": "album",
+        "date": "date",
+        "genre": "genre",
+        "track_number": "tracknumber",
+    }
+    for key, field in mapping.items():
+        value = tags.get(key)
+        if value:
+            audio[field] = [str(value)]
+
+    if cover and cover.exists():
+        picture = Picture()
+        picture.data = cover.read_bytes()
+        picture.type = 3  # front cover
+        picture.mime = "image/jpeg"
+        audio.clear_pictures()
+        audio.add_picture(picture)
+
+    audio.save()
+
+
 def apply_audio_metadata(
     audio_path: str | Path,
     info: dict[str, Any],
@@ -282,6 +319,8 @@ def apply_audio_metadata(
             _write_mp3(audio_path, tags, cover_jpg)
         elif suffix in {".m4a", ".mp4", ".aac"}:
             _write_mp4(audio_path, tags, cover_jpg)
+        elif suffix == ".flac":
+            _write_flac(audio_path, tags, cover_jpg)
         else:
             # Diğer biçimlerde (opus/ogg/flac) mutagen'in genel arayüzü.
             from mutagen import File as MutagenFile

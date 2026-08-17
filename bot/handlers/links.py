@@ -238,6 +238,9 @@ def build_youtube_action_keyboard(job_id: str, view: str = "main") -> InlineKeyb
                 InlineKeyboardButton("192k",        callback_data=f"do|{job_id}|audio_192"),
                 InlineKeyboardButton("128k",        callback_data=f"do|{job_id}|audio_128"),
             ],
+            # FLAC kayıpsızdır ama kaynak kayıplıysa kaliteyi ARTIRMAZ, yalnızca
+            # dosyayı büyütür. Bu yüzden ayrı bir seçenek, varsayılan değil.
+            [InlineKeyboardButton("🎼 FLAC (kayıpsız)", callback_data=f"do|{job_id}|audio_flac")],
             [back],
         ])
 

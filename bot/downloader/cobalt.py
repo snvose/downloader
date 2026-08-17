@@ -182,6 +182,12 @@ class CobaltClient:
         if not self.enabled:
             raise CobaltUnavailable("cobalt instance adresi tanımlı değil (COBALT_API_URL).")
 
+        # cobalt'ın audioFormat listesinde flac YOK. İstek yine de gönderilse
+        # sessizce mp3 dönerdi; kullanıcı FLAC istemişken mp3 almak, hiç
+        # almamaktan daha kötü. Bu modda sıradaki kaynağa (yt-dlp) devredilir.
+        if mode == "audio_flac":
+            raise CobaltUnavailable("cobalt FLAC üretemiyor — yt-dlp'ye devrediliyor.")
+
         payload = self._build_payload(url, mode, subtitle_lang=subtitle_lang)
 
         try:

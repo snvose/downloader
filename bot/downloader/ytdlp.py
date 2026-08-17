@@ -1100,7 +1100,7 @@ def _should_retry_without_cookies(error: Exception) -> bool:
 # ── Mode yardımcıları ────────────────────────────────────────────────────────
 # Desteklenen indirme modları:
 #   video_best / video_1080 / video_720 / video_480 / video_360
-#   audio_best / audio_mp3 / audio_320 / audio_192 / audio_128
+#   audio_best / audio_mp3 / audio_320 / audio_192 / audio_128 / audio_flac
 #   thumbnail
 #   auto / media_auto  (sosyal platform / direkt)
 
@@ -1110,7 +1110,19 @@ _AUDIO_QUALITY = {
     "audio_320": "320",
     "audio_192": "192",
     "audio_128": "128",
+    "audio_flac": "0",  # kayıpsız — bit hızı parametresi yok
     "audio": "320",  # geriye dönük uyumluluk
+}
+
+# Hangi mod hangi codec'e dönüştürülür. Varsayılan mp3.
+#
+# FLAC hakkında not: kayıpsızdır ama kaynak zaten kayıplıysa (YouTube opus,
+# Instagram/TikTok aac) FLAC'a çevirmek KAYBEDİLEN BİLGİYİ GERİ GETİRMEZ —
+# yalnızca dosyayı 5-10 kat büyütür. Bu yüzden FLAC varsayılan DEĞİL, ayrı
+# bir seçenek: kaynağın kendisi kayıpsız olduğunda (ör. Bandcamp) veya
+# arşivlemek istendiğinde anlamlı.
+_AUDIO_CODEC = {
+    "audio_flac": "flac",
 }
 
 _VIDEO_HEIGHT = {
@@ -1245,13 +1257,25 @@ def _build_opts(
             raise RuntimeError("ffmpeg bulunamadı. Ses indirmek için ffmpeg gerekli.")
 
         quality = _AUDIO_QUALITY.get(mode, "320")
+        codec = _AUDIO_CODEC.get(mode, "mp3")
+
+        # FLAC'ta kaynağın en iyi ses akışını almak ayrıca önemli: kayıpsız
+        # kaba düşük bit hızlı bir akış koymak dosyayı büyütür, kaliteyi değil.
         opts["format"] = "bestaudio/best"
+        if codec == "flac":
+            opts["format_sort"] = ["abr", "asr"]
+
+        extract: dict[str, Any] = {
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": codec,
+        }
+        # preferredquality FLAC'ta anlamsız; verilirse ffmpeg'e geçersiz
+        # bit hızı argümanı gidiyor.
+        if codec != "flac":
+            extract["preferredquality"] = quality
+
         opts["postprocessors"] = [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": quality,
-            },
+            extract,
             # Temel etiketleri ffmpeg yazsın (başlık/sanatçı/albüm).
             # Bu adım OLMADAN dosyada yalnızca kodlayıcı etiketi kalıyordu.
             {
