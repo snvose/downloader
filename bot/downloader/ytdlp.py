@@ -198,6 +198,73 @@ def _cookie_names_for_domain(cookie_file: Path, domain_keyword: str) -> list[str
     return sorted(names)
 
 
+# Netscape cookie dosyalarının ilk satırında bulunması ZORUNLU sihirli başlık.
+# Hem yt-dlp hem Python'un MozillaCookieJar'ı bu satır yoksa dosyayı hiç
+# okumuyor ve "does not look like a Netscape format cookies file" diyor.
+_NETSCAPE_HEADER = "# Netscape HTTP Cookie File"
+
+
+def _repair_cookie_header(cookies_file: Path, job_id: str, queue: Any) -> None:
+    """
+    Cookie dosyasının başındaki sihirli başlığı eksikse geri koyar.
+
+    Dosyanın en üstüne elle yeni çerez yapıştırıldığında başlık satırının
+    üzerine yazılıyor. Sonuç TÜM platformları birden çökertiyordu: içerik
+    kusursuz olsa bile yt-dlp dosyayı reddediyor, YouTube dahil hiçbir
+    cookie'li indirme çalışmıyordu.
+
+    Onarım yalnızca gövde gerçekten geçerli çerez satırlarından oluşuyorsa
+    yapılır — bozuk bir dosyaya başlık ekleyip "düzeldi" sanmak daha kötü.
+    """
+    try:
+        text = cookies_file.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return
+
+    lines = text.splitlines()
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("# Netscape") or stripped.startswith("# HTTP Cookie File"):
+            return  # başlık yerinde
+        break
+
+    # Gövde geçerli mi? En az bir satır 7 sekme alanlı olmalı.
+    veri_satiri = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or (stripped.startswith("#") and not stripped.startswith("#HttpOnly_")):
+            continue
+        if len(line.split("\t")) == 7:
+            veri_satiri += 1
+        else:
+            queue.put(log_event(
+                job_id, "warning",
+                "Cookie dosyasının biçimi bozuk (sekmeyle ayrılmamış satır var) — "
+                "tarayıcı eklentisinden yeniden dışa aktar.",
+            ))
+            return
+
+    if not veri_satiri:
+        return
+
+    try:
+        cookies_file.write_text(
+            _NETSCAPE_HEADER + "\n# Otomatik onarıldı: eksik başlık satırı geri eklendi.\n" + text,
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        queue.put(log_event(job_id, "warning", f"Cookie başlığı onarılamadı: {short_error(exc)}"))
+        return
+
+    queue.put(log_event(
+        job_id, "warning",
+        f"Cookie dosyasında '{_NETSCAPE_HEADER}' başlığı eksikti, otomatik eklendi "
+        f"({veri_satiri} çerez korundu).",
+    ))
+
+
 def _log_cookie_status(job_id: str, url: str, cookies_file: Path | None, queue: Any) -> None:
     if not cookies_file:
         queue.put(log_event(job_id, "warning", "Cookie dosyası ayarlı değil."))
@@ -213,6 +280,8 @@ def _log_cookie_status(job_id: str, url: str, cookies_file: Path | None, queue: 
         size = 0
 
     queue.put(log_event(job_id, "info", f"Cookie dosyası aktif: {cookies_file} ({size} bytes)"))
+
+    _repair_cookie_header(cookies_file, job_id, queue)
 
     host = (urlparse(url).netloc or "").lower()
 
