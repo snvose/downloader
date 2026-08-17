@@ -1068,6 +1068,21 @@ def _clear_partial_files(download_dir: Path) -> None:
         pass
 
 
+def _is_photo_only_error(error: Exception) -> bool:
+    """
+    Hata "gönderide video yok" mu diyor?
+
+    Bu bir erişim/oturum sorunu değil, içeriğin cinsi: gönderi fotoğraf ya da
+    karusel. Cookie veya format profili değiştirerek çözülmez.
+    """
+    msg = str(error).lower()
+    return (
+        "there is no video in this post" in msg
+        or "no video formats found" in msg
+        or "no video could be found" in msg
+    )
+
+
 def _should_retry_without_cookies(error: Exception) -> bool:
     msg = str(error).lower()
     markers = [
@@ -1557,6 +1572,19 @@ def download_with_ytdlp(
             message = short_error(exc)
             errors.append(f"{label}: {message}")
             queue.put(log_event(job_id, "warning", f"yt-dlp başarısız [{label}]: {message}"))
+
+            # "Bu gönderide video yok" bir erişim sorunu DEĞİL, içeriğin
+            # cinsi: gönderi fotoğraf/karusel. Cookie'yi ya da format
+            # profilini değiştirmek sonucu değiştirmiyor — Instagram fotoğraf
+            # gönderilerinde bu yüzden 4 anlamsız deneme yapılıp her seferinde
+            # Instagram dürtülüyordu. Doğrudan gallery-dl'e geçilir; görselleri
+            # indirebilen tek kaynak o.
+            if _is_photo_only_error(exc):
+                queue.put(log_event(
+                    job_id, "info",
+                    "Gönderide video yok (fotoğraf/karusel) — görseller için gallery-dl'e geçiliyor.",
+                ))
+                break
 
             if not _should_retry_without_cookies(exc) and not _is_social_url(url):
                 break
