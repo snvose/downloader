@@ -1,18 +1,13 @@
 from __future__ import annotations
 
 """
-bot/analytics.py — kullanım analitiği.
+Usage analytics.
 
-İki parça:
+1) ActivityBuffer — a write buffer. Writing "I saw this user" on every message
+   is wasteful I/O, so touches are collected in memory and flushed in a single
+   transaction. Download records are not buffered; they are rare and valuable.
 
-1) ActivityBuffer — yazma tamponu.
-   Her mesajda "kullanıcıyı gördüm" bilgisini diske yazmak gereksiz I/O
-   üretir (aynı kullanıcı dakikada 5 link atabilir). Bunun yerine dokunuşlar
-   bellekte biriktirilir ve periyodik olarak TEK transaction'da yazılır.
-   İndirme kayıtları tamponlanmaz — onlar seyrek ve değerlidir, anında yazılır.
-
-2) Sorgular — panel dashboard'unun ihtiyaç duyduğu özetler.
-   Hepsi SQL tarafında toplanır (Python'da döngüyle sayılmaz).
+2) Queries — the summaries the admin dashboard needs, aggregated in SQL.
 """
 
 import asyncio
@@ -23,8 +18,8 @@ from typing import Any
 
 logger = logging.getLogger("downloader")
 
-FLUSH_INTERVAL = 30.0     # saniye
-FLUSH_THRESHOLD = 50      # bu kadar bekleyen dokunuş birikince hemen yaz
+FLUSH_INTERVAL = 30.0     # seconds
+FLUSH_THRESHOLD = 50      # flush immediately once this many touches pile up
 
 
 @dataclass
@@ -39,11 +34,10 @@ class _Touch:
 
 class ActivityBuffer:
     """
-    Kullanıcı/sohbet aktivite güncellemelerini biriktirip toplu yazar.
+    Collects user/chat activity updates and writes them in batches.
 
-    Kayıp riski bilinçlidir: bot çökerse en fazla FLUSH_INTERVAL saniyelik
-    "son görülme" güncellemesi kaybolur. Bu veri kritik değil; buna karşılık
-    her mesajda disk yazımı ortadan kalkıyor.
+    The risk is deliberate: a crash loses at most FLUSH_INTERVAL seconds of
+    "last seen" updates, which is not critical data.
     """
 
     def __init__(self, db: Any):
@@ -91,7 +85,7 @@ class ActivityBuffer:
             await self.flush()
 
     async def flush(self) -> int:
-        """Bekleyen dokunuşları tek seferde yazar. Yazılan kayıt sayısını döner."""
+        """Writes pending touches in one go. Returns the number of rows."""
         async with self._lock:
             users, chats = self._users, self._chats
             self._users, self._chats = {}, {}
@@ -112,7 +106,7 @@ class ActivityBuffer:
                     )
                     written += 1
                 except Exception:
-                    logger.exception("Aktivite yazımı başarısız (user=%s)", user_id)
+                    logger.exception("Activity write failed (user=%s)", user_id)
             for chat_id, entry in chats.items():
                 try:
                     self.db.touch_chat(
@@ -120,7 +114,7 @@ class ActivityBuffer:
                     )
                     written += 1
                 except Exception:
-                    logger.exception("Aktivite yazımı başarısız (chat=%s)", chat_id)
+                    logger.exception("Activity write failed (chat=%s)", chat_id)
             return written
 
         written = await asyncio.to_thread(_write)
@@ -129,25 +123,24 @@ class ActivityBuffer:
 
 
 async def activity_flusher(buffer: ActivityBuffer, interval: float = FLUSH_INTERVAL) -> None:
-    """Arka plan görevi: tamponu düzenli aralıklarla boşaltır."""
+    """Background task that flushes the buffer periodically."""
     while True:
         try:
             await asyncio.sleep(interval)
             written = await buffer.flush()
             if written:
-                logger.debug("Aktivite tamponu yazıldı: %d kayıt", written)
+                logger.debug("Activity buffer flushed: %d rows", written)
         except asyncio.CancelledError:
-            # Kapanışta kalan veriyi kaybetme.
             try:
                 await buffer.flush()
             except Exception:
                 pass
             raise
         except Exception:
-            logger.exception("Aktivite tamponu yazılamadı")
+            logger.exception("Activity buffer flush failed")
 
 
-# ── Sorgular ─────────────────────────────────────────────────────────────────
+# ── Queries ──────────────────────────────────────────────────────────────────
 
 def active_users(db: Any, days: int) -> int:
     cutoff = time.time() - days * 86400
@@ -168,7 +161,12 @@ def downloads_since(db: Any, days: int) -> int:
 
 
 def daily_counts(db: Any, days: int = 7) -> list[dict[str, Any]]:
-    """Son N günün günlük indirme sayısı (bugün dahil, eskiden yeniye)."""
+    """
+    Daily download counts for the last N days, oldest first.
+
+    day_offset counts backwards from today: 0 is today, 1 is yesterday, and so
+    on, so the returned list can be charted left to right as time.
+    """
     cutoff = time.time() - days * 86400
     rows = db.query(
         f"""SELECT CAST((created_at - {db.ph}) / 86400 AS INTEGER) AS bucket,
@@ -178,10 +176,11 @@ def daily_counts(db: Any, days: int = 7) -> list[dict[str, Any]]:
             GROUP BY bucket ORDER BY bucket""",
         (cutoff, cutoff),
     )
+    # bucket 0 is the oldest day in the window, bucket days-1 is today.
     counts = {int(r["bucket"]): int(r["count"]) for r in rows}
     return [
-        {"day_offset": days - 1 - i, "count": counts.get(days - 1 - i, 0)}
-        for i in range(days)
+        {"day_offset": days - 1 - bucket, "count": counts.get(bucket, 0)}
+        for bucket in range(days)
     ]
 
 
@@ -211,7 +210,7 @@ def platform_distribution(db: Any, days: int | None = None) -> list[dict[str, An
 
 
 def source_distribution(db: Any) -> list[dict[str, Any]]:
-    """Hangi indirme kaynağı (cobalt/ytdlp/gallerydl) ne kadar iş görmüş."""
+    """How much work each download source (cobalt/ytdlp/gallerydl) did."""
     return db.query(
         """SELECT source, COUNT(*) AS count FROM downloads
            WHERE result='success' AND source <> ''
@@ -254,7 +253,7 @@ def failure_rate(db: Any, days: int = 7) -> dict[str, Any]:
 
 
 def summary(db: Any) -> dict[str, Any]:
-    """Dashboard için tek çağrıda tüm özet."""
+    """Everything the dashboard needs in a single call."""
     base = db.stats()
     return {
         **base,

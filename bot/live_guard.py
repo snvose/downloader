@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 """
-bot/live_guard.py — Canlı yayın (livestream) koruması.
+Livestream protection.
 
-Neden var:
-  Canlı yayın linkleri sonsuz akış üretir. yt-dlp bunları ffmpeg alt
-  sürecine devreder; indirme asla bitmez, worker slotu sonsuza dek dolu
-  kalır ve disk sürekli büyür (ölçüm: ~9 MB/dk, yayın başına, süresiz).
-  Bu modül indirme BAŞLAMADAN önce yayını tespit eder ve reddeder.
+Livestream links produce an endless stream: the download never finishes, the
+worker slot stays busy forever and the disk keeps growing. This module detects
+a livestream before the download starts and rejects it.
 
-İki parça:
-  1) probe_is_live()  — hızlı metadata sorgusu (indirme yok, ~1-2 sn)
-  2) LiveGuard        — tekrar eden denemeler için uyarı + geçici ban
+Two parts:
+  1) probe_is_live() — fast metadata query, no download
+  2) LiveGuard       — warnings and a temporary ban for repeat attempts
 """
 
 import time
@@ -21,14 +19,13 @@ from typing import Any
 from .storage import read_json, write_json_atomic
 
 
-# ── 1. Canlı yayın tespiti ───────────────────────────────────────────────────
+# ── 1. Detection ─────────────────────────────────────────────────────────────
 
-# Bu alanların herhangi biri yayının canlı olduğunu gösterir.
 _LIVE_STATUSES = {"is_live", "is_upcoming", "post_live"}
 
 
 def info_is_live(info: dict[str, Any] | None) -> bool:
-    """Bir yt-dlp info dict'i canlı yayına mı ait?"""
+    """Does this yt-dlp info dict describe a livestream?"""
     if not isinstance(info, dict):
         return False
 
@@ -38,7 +35,7 @@ def info_is_live(info: dict[str, Any] | None) -> bool:
     if str(info.get("live_status") or "") in _LIVE_STATUSES:
         return True
 
-    # Playlist/çoklu girdi: herhangi bir girdi canlıysa tamamı reddedilir.
+    # Playlist entries: one live entry rejects the whole thing.
     entries = info.get("entries")
     if isinstance(entries, list):
         for entry in entries[:20]:
@@ -55,10 +52,10 @@ def probe_is_live(
     timeout: int = 15,
 ) -> tuple[bool, dict[str, Any]]:
     """
-    İndirme YAPMADAN linkin canlı yayın olup olmadığını sorar.
+    Asks whether the link is a livestream without downloading anything.
 
-    Dönüş: (canlı_mı, info_dict). Sorgu başarısız olursa (False, {}) döner —
-    yani belirsizlik indirmeyi engellemez, normal akış hata yönetimine düşer.
+    Returns (is_live, info). A failed query returns (False, {}) so uncertainty
+    never blocks a download; normal error handling takes over.
     """
     import yt_dlp
 
@@ -69,7 +66,6 @@ def probe_is_live(
         "noplaylist": True,
         "socket_timeout": timeout,
         "retries": 1,
-        # extract_flat: canlı tespiti için tam işleme gerekmez, bu da hızlandırır.
         "extract_flat": "in_playlist",
     }
 
@@ -88,16 +84,16 @@ def probe_is_live(
     return info_is_live(info), info
 
 
-# ── 2. Uyarı + geçici ban ────────────────────────────────────────────────────
+# ── 2. Warnings and temporary bans ───────────────────────────────────────────
 
 class LiveGuard:
     """
-    Canlı yayın linki gönderen kullanıcıyı kademeli olarak kısıtlar.
+    Gradually restricts a user who keeps sending livestream links.
 
-    1. ve 2. deneme → uyarı mesajı.
-    3. deneme       → `ban_days` gün geçici ban (süresi dolunca kendiliğinden kalkar).
+    Attempts 1 and 2 produce a warning, attempt `strike_limit` produces a
+    temporary ban of `ban_days` days that lifts itself when it expires.
 
-    Durum data/temp_bans.json içinde tutulur:
+    State lives in data/temp_bans.json:
         {"users": {"<id>": {"strikes": 2, "until": 0.0, "last": 172...}}}
     """
 
@@ -114,7 +110,6 @@ class LiveGuard:
         self.ban_days = int(ban_days)
         self.strike_window = int(strike_window_days) * 86400
 
-    # ── dosya erişimi ──
     def _load(self) -> dict[str, dict]:
         data = read_json(self.file, {"users": {}})
         if not isinstance(data, dict):
@@ -125,9 +120,8 @@ class LiveGuard:
     def _save(self, users: dict[str, dict]) -> None:
         write_json_atomic(self.file, {"users": users})
 
-    # ── sorgu ──
     def ban_remaining(self, user_id: int | None) -> float:
-        """Kalan ban süresi (saniye). 0 ise banlı değil. Süresi dolan ban silinir."""
+        """Remaining ban time in seconds; 0 means not banned."""
         if not user_id:
             return 0.0
 
@@ -140,7 +134,6 @@ class LiveGuard:
         remaining = until - time.time()
 
         if remaining <= 0:
-            # Süresi dolmuş → ban kalkar, strike sayacı da sıfırlanır.
             if until:
                 record["until"] = 0.0
                 record["strikes"] = 0
@@ -153,14 +146,13 @@ class LiveGuard:
     def is_banned(self, user_id: int | None) -> bool:
         return self.ban_remaining(user_id) > 0
 
-    # ── kayıt ──
     def register_attempt(self, user_id: int) -> dict[str, Any]:
         """
-        Canlı yayın denemesini kaydeder.
+        Records a livestream attempt.
 
-        Dönüş:
-          {"action": "warn",   "strikes": n, "remaining": kalan_hak}
-          {"action": "banned", "strikes": n, "days": gün, "seconds": saniye}
+        Returns either
+          {"action": "warn",   "strikes": n, "remaining": left}
+          {"action": "banned", "strikes": n, "days": d, "seconds": s}
         """
         users = self._load()
         key = str(user_id)
@@ -170,7 +162,7 @@ class LiveGuard:
         strikes = int(record.get("strikes") or 0)
         last = float(record.get("last") or 0.0)
 
-        # Uzun süre temiz kalan kullanıcının sayacı sıfırlanır.
+        # A user who stayed clean for a long time starts over.
         if last and (now - last) > self.strike_window:
             strikes = 0
 
@@ -181,7 +173,6 @@ class LiveGuard:
         if strikes >= self.strike_limit:
             seconds = self.ban_days * 86400
             record["until"] = now + seconds
-            record["strikes"] = strikes
             users[key] = record
             self._save(users)
             return {
@@ -201,7 +192,7 @@ class LiveGuard:
         }
 
     def clear(self, user_id: int) -> bool:
-        """Admin için: kullanıcının canlı-yayın banını ve sayacını sıfırla."""
+        """Admin action: clears the ban and the strike counter."""
         users = self._load()
         if str(user_id) not in users:
             return False
@@ -210,7 +201,6 @@ class LiveGuard:
         return True
 
     def list_active(self) -> list[dict[str, Any]]:
-        """Aktif geçici banlar (admin paneli için)."""
         now = time.time()
         out: list[dict[str, Any]] = []
         for key, record in self._load().items():
@@ -227,11 +217,7 @@ class LiveGuard:
 
 
 def guard_message(result: dict[str, Any]) -> str:
-    """
-    register_attempt() sonucunu kullanıcıya gösterilecek metne çevirir.
-
-    Uyarı aşamasında kalan hak belirtilir; ban aşamasında süre yazılır.
-    """
+    """Turns a register_attempt() result into a user-facing message."""
     from .i18n import t
 
     if result.get("action") == "banned":
@@ -244,14 +230,16 @@ def guard_message(result: dict[str, Any]) -> str:
 
 
 def format_duration(seconds: float) -> str:
-    """Kalan ban süresini kullanıcıya okunur biçimde yazar."""
+    """Human readable remaining ban time."""
+    from .i18n import t
+
     seconds = max(0, int(seconds))
     days, rem = divmod(seconds, 86400)
     hours, rem = divmod(rem, 3600)
     minutes = rem // 60
 
     if days:
-        return f"{days} gün {hours} saat" if hours else f"{days} gün"
+        return f"{days} {t('unit_days')} {hours} {t('unit_hours')}" if hours else f"{days} {t('unit_days')}"
     if hours:
-        return f"{hours} saat {minutes} dakika" if minutes else f"{hours} saat"
-    return f"{max(1, minutes)} dakika"
+        return f"{hours} {t('unit_hours')} {minutes} {t('unit_minutes')}" if minutes else f"{hours} {t('unit_hours')}"
+    return f"{max(1, minutes)} {t('unit_minutes')}"

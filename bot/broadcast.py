@@ -1,23 +1,19 @@
 from __future__ import annotations
 
 """
-bot/broadcast.py — toplu duyuru gönderimi.
+Bulk announcement delivery.
 
-Tasarım kararları:
+  • RATE LIMIT: Telegram allows roughly 30 messages per second across different
+    chats. The default here is 20/s. If Telegram still answers with RetryAfter,
+    the requested delay is honoured and that target is retried once.
 
-  • HIZ SINIRI: Telegram farklı sohbetlere saniyede ~30 mesaja izin verir.
-    Güvenli tarafta kalmak için varsayılan 20/sn (0.05 sn aralık). Telegram
-    yine de RetryAfter dönerse istenen süre beklenir ve o hedef tekrar denenir.
+  • PERMANENTLY UNREACHABLE targets (blocked the bot, deleted account, kicked)
+    are marked with is_blocked=1 in the database and skipped by the next
+    broadcast, instead of wasting dozens of requests every time.
 
-  • KALICI OLARAK ERİŞİLEMEYENLER: botu engelleyen / hesabı silinen / bottan
-    atılan hedefler DB'de is_blocked=1 ile işaretlenir. Bir sonraki duyuruda
-    bu kayıtlar hedef listesine hiç girmez — her seferinde onlarca boşa istek
-    atılmaz.
+  • TEMPORARY failures (timeout, bad gateway) are only counted, never marked.
 
-  • GEÇİCİ HATA vs KALICI HATA ayrımı önemlidir: "bot was blocked" kalıcıdır
-    (işaretle), "timeout / bad gateway" geçicidir (işaretleme, sadece say).
-
-  • İPTAL: uzun süren gönderim admin tarafından durdurulabilir.
+  • CANCELLABLE: a long running broadcast can be stopped by the admin.
 """
 
 import asyncio
@@ -28,11 +24,10 @@ from typing import Any
 
 logger = logging.getLogger("downloader")
 
-# Saniyedeki mesaj sayısı (Telegram üst sınırı ~30; pay bırakıyoruz)
 MESSAGES_PER_SECOND = 20
 SEND_DELAY = 1.0 / MESSAGES_PER_SECOND
 
-# Bu ifadeler hedefin KALICI olarak erişilemez olduğunu gösterir.
+# These phrases mean the target is permanently unreachable.
 _PERMANENT_MARKERS = (
     "bot was blocked by the user",
     "user is deactivated",
@@ -54,7 +49,7 @@ def _is_permanent_failure(error: Exception) -> bool:
 
 @dataclass
 class BroadcastJob:
-    """Tek bir duyuru gönderiminin durumu."""
+    """State of a single broadcast."""
 
     text: str
     targets: list[int]
@@ -65,11 +60,10 @@ class BroadcastJob:
 
     sent: int = 0
     failed: int = 0
-    blocked: int = 0                  # kalıcı erişilemez (DB'de işaretlendi)
+    blocked: int = 0                  # permanently unreachable, marked in the db
     cancelled: bool = False
     running: bool = False
 
-    # Örnek hata mesajları (admin raporunda gösterilir)
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -93,46 +87,45 @@ class BroadcastJob:
         filled = int(done / total * width)
         bar = "█" * filled + "░" * (width - filled)
 
-        state = "🛑 İptal edildi" if self.cancelled else (
-            "📤 Gönderiliyor" if self.running else "✅ Tamamlandı"
+        state = "🛑 Cancelled" if self.cancelled else (
+            "📤 Sending" if self.running else "✅ Finished"
         )
 
         return (
             f"<b>{state}</b>\n\n"
             f"<code>[{bar}]</code> <b>{percent}%</b>\n"
-            f"İşlenen: <b>{done}</b> / {self.total}\n"
-            f"✅ Ulaşan: <b>{self.sent}</b>\n"
-            f"🚫 Engellemiş: <b>{self.blocked}</b>\n"
-            f"⚠️ Hata: <b>{self.failed}</b>\n"
-            f"⏱ Süre: <b>{self.duration:.0f} sn</b>"
+            f"Processed: <b>{done}</b> / {self.total}\n"
+            f"✅ Delivered: <b>{self.sent}</b>\n"
+            f"🚫 Unreachable: <b>{self.blocked}</b>\n"
+            f"⚠️ Errors: <b>{self.failed}</b>\n"
+            f"⏱ Elapsed: <b>{self.duration:.0f} s</b>"
         )
 
     def summary_text(self) -> str:
-        """Gönderim sonrası özet rapor."""
         lines = [
-            "🛑 <b>Duyuru iptal edildi</b>" if self.cancelled
-            else "✅ <b>Duyuru tamamlandı</b>",
+            "🛑 <b>Broadcast cancelled</b>" if self.cancelled
+            else "✅ <b>Broadcast finished</b>",
             "",
-            f"📊 Hedef: <b>{self.total}</b>",
-            f"✅ Ulaşan: <b>{self.sent}</b>",
-            f"🚫 Engellemiş / erişilemez: <b>{self.blocked}</b>",
-            f"⚠️ Geçici hata: <b>{self.failed}</b>",
-            f"⏱ Süre: <b>{self.duration:.0f} saniye</b>",
+            f"📊 Targets: <b>{self.total}</b>",
+            f"✅ Delivered: <b>{self.sent}</b>",
+            f"🚫 Blocked / unreachable: <b>{self.blocked}</b>",
+            f"⚠️ Temporary errors: <b>{self.failed}</b>",
+            f"⏱ Elapsed: <b>{self.duration:.0f} seconds</b>",
         ]
 
         if self.total:
             rate = self.sent * 100 / self.total
-            lines.append(f"📈 Başarı oranı: <b>%{rate:.0f}</b>")
+            lines.append(f"📈 Success rate: <b>{rate:.0f}%</b>")
 
         if self.blocked:
             lines.append(
-                f"\n<i>{self.blocked} kayıt işaretlendi; bir sonraki duyuruda "
-                "bunlara tekrar denenmeyecek.</i>"
+                f"\n<i>{self.blocked} records were marked and will be skipped "
+                "by the next broadcast.</i>"
             )
 
         if self.errors:
             sample = "\n".join(f"• {e}" for e in self.errors[:3])
-            lines.append(f"\n<b>Örnek hatalar</b>\n{sample}")
+            lines.append(f"\n<b>Sample errors</b>\n{sample}")
 
         return "\n".join(lines)
 
@@ -146,77 +139,73 @@ async def run_broadcast(
     progress_every: int = 25,
 ) -> BroadcastJob:
     """
-    Duyuruyu kuyruklu ve hız sınırlı biçimde gönderir.
+    Sends the broadcast, queued and rate limited.
 
-    on_progress: her `progress_every` hedefte bir çağrılan async callback.
+    on_progress: async callback invoked every `progress_every` targets.
     """
     job.running = True
     job.started_at = time.time()
+
+    async def _send(chat_id: int) -> None:
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text=job.text,
+            parse_mode=job.parse_mode,
+            disable_web_page_preview=True,
+        )
 
     for index, chat_id in enumerate(job.targets, start=1):
         if job.cancelled:
             break
 
         try:
-            await app.bot.send_message(
-                chat_id=chat_id,
-                text=job.text,
-                parse_mode=job.parse_mode,
-                disable_web_page_preview=True,
-            )
+            await _send(chat_id)
             job.sent += 1
 
         except Exception as exc:
-            # Telegram "çok hızlısın" derse istediği kadar bekle ve tekrar dene.
+            # If Telegram says "too fast", wait as long as it asks and retry.
             retry_after = getattr(exc, "retry_after", None)
             if retry_after:
-                logger.warning("Duyuru flood limiti: %s sn bekleniyor", retry_after)
+                logger.warning("Broadcast flood limit: waiting %s s", retry_after)
                 await asyncio.sleep(float(retry_after) + 1.0)
                 try:
-                    await app.bot.send_message(
-                        chat_id=chat_id,
-                        text=job.text,
-                        parse_mode=job.parse_mode,
-                        disable_web_page_preview=True,
-                    )
+                    await _send(chat_id)
                     job.sent += 1
+                    exc = None
                 except Exception as retry_exc:
                     exc = retry_exc
+
+            if exc is not None:
+                if _is_permanent_failure(exc):
+                    job.blocked += 1
+                    if db:
+                        try:
+                            # In a private chat chat_id == user_id.
+                            await asyncio.to_thread(
+                                db.mark_blocked,
+                                user_id=chat_id if chat_id > 0 else None,
+                                chat_id=chat_id if chat_id < 0 else None,
+                            )
+                        except Exception:
+                            logger.exception("Could not mark blocked target: %s", chat_id)
                 else:
-                    await asyncio.sleep(SEND_DELAY)
-                    continue
+                    job.failed += 1
+                    if len(job.errors) < 5:
+                        job.errors.append(f"{chat_id}: {str(exc)[:90]}")
 
-            if _is_permanent_failure(exc):
-                job.blocked += 1
-                if db:
-                    try:
-                        # Özel sohbette chat_id == user_id
-                        await asyncio.to_thread(
-                            db.mark_blocked,
-                            user_id=chat_id if chat_id > 0 else None,
-                            chat_id=chat_id if chat_id < 0 else None,
-                        )
-                    except Exception:
-                        logger.exception("Engellenen hedef işaretlenemedi: %s", chat_id)
-            else:
-                job.failed += 1
-                if len(job.errors) < 5:
-                    job.errors.append(f"{chat_id}: {str(exc)[:90]}")
-
-        # Hız sınırı
         await asyncio.sleep(SEND_DELAY)
 
         if on_progress and index % progress_every == 0:
             try:
                 await on_progress(job)
             except Exception:
-                logger.exception("Duyuru ilerleme bildirimi başarısız")
+                logger.exception("Broadcast progress update failed")
 
     job.running = False
     job.finished_at = time.time()
 
     logger.info(
-        "DUYURU tamamlandı | hedef=%d ulaşan=%d engellemiş=%d hata=%d süre=%.0fsn",
+        "BROADCAST finished | targets=%d delivered=%d blocked=%d errors=%d duration=%.0fs",
         job.total, job.sent, job.blocked, job.failed, job.duration,
     )
 

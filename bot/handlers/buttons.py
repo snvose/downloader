@@ -72,10 +72,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if data == "menu|owner":
         if not is_owner:
-            await query.answer("Bu alan sadece owner için.", show_alert=True)
+            await query.answer("Admins only.", show_alert=True)
             return
 
-        # Eski "Owner Settings" menüsü kaldırıldı; yeni gelişmiş admin paneli açılır.
         from bot.handlers.admin import _panel_keyboard, _panel_text
         state = context.application.bot_data["bot_state"]
         await query.answer()
@@ -88,18 +87,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    # ÖLÜ AKIŞ: "owner|toggle" eski Owner Settings menüsüne aitti. O menü
-    # kaldırıldı (yerine /admin paneli geldi) ama callback canlı kalmıştı;
-    # sohbet geçmişindeki eski bir mesajdan tıklanınca kaldırılmış menüyü
-    # geri getiriyordu. Artık kullanıcı yeni panele yönlendiriliyor.
+    # DEAD FLOW: "owner|toggle" belonged to the old Owner Settings menu, which
+    # was replaced by the /admin panel, but the callback stayed clickable on
+    # old messages in chat history. Route it to the new panel instead of
+    # resurrecting the removed menu.
     if data == "owner|toggle":
         if not is_owner:
-            await query.answer("Bu alan sadece owner için.", show_alert=True)
+            await query.answer("Admins only.", show_alert=True)
             return
 
         from bot.handlers.admin import _panel_keyboard, _panel_text
         state = context.application.bot_data["bot_state"]
-        await query.answer("Bu menü yenilendi — admin paneli açılıyor.")
+        await query.answer("This menu was refreshed — opening the admin panel.")
         await safe_query_edit(
             query,
             _panel_text(context),
@@ -125,7 +124,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.answer(t("menu_expired"), show_alert=True)
             return
 
-        # Sade arayüz: tek "Detaylar" butonu. Video bilgisi + açıklama birlikte.
+        # Clean interface: a single "Details" button sends video info +
+        # description together.
         if action == "details":
             if post.get("details_sent"):
                 await query.answer(t("details_sent"), show_alert=True)
@@ -149,7 +149,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 )
             return
 
-        # Geriye dönük uyumluluk: eski info/desc callback'leri
+        # Backward compatibility: old info/desc callbacks.
         if action == "info":
             if post.get("info_sent"):
                 await query.answer(t("details_sent"), show_alert=True)
@@ -191,17 +191,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 )
             return
 
-    # ── YouTube format menüsü: görünüm değiştir (main/video/audio) ────────────
+    # ── YouTube format menu: switch view (main/video/audio) ─────────────────
     if data.startswith("menujob|"):
         await _handle_menujob(update, context)
         return
 
-    # ── YouTube format menüsü: indirmeyi başlat ──────────────────────────────
+    # ── YouTube format menu: start the download ──────────────────────────────
     if data.startswith("do|"):
         await _handle_do(update, context)
         return
 
-    # ── Playlist aksiyonları ──────────────────────────────────────────────────
+    # ── Playlist actions ──────────────────────────────────────────────────────
     if data.startswith("pl_"):
         await _handle_playlist(update, context)
         return
@@ -224,8 +224,8 @@ async def _handle_menujob(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer(t("menu_expired_link"), show_alert=True)
         return
 
-    # Not: format/kalite menüsü sadece linki atan kişiye değil, sohbetteki
-    # herkese açık — herkes tür (video/ses) ve kalite seçebilir.
+    # The format/quality menu is open to everyone in the chat, not just the
+    # person who sent the link.
     await query.answer()
     view = view if view in {"video", "audio"} else "main"
     keyboard = build_youtube_action_keyboard(job_id, view=view)
@@ -260,7 +260,7 @@ async def _handle_do(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     job_id, mode = parts[1], parts[2]
-    # 4. parça altyazı dilidir: "do|<job>|video_720|tr" → altyazı gömülü indirme
+    # 4th part is the subtitle language: "do|<job>|video_720|tr"
     subtitle_lang = parts[3] if len(parts) > 3 else ""
     bot_data = context.application.bot_data
     permissions = bot_data["permissions"]
@@ -272,13 +272,12 @@ async def _handle_do(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await query.answer(t("menu_expired_link"), show_alert=True)
         return
 
-    # Not: format/kalite seçimi sadece linki atan kişiye değil, sohbetteki
-    # herkese açık — grup içindeki herhangi biri indirmeyi başlatabilir.
+    # Format/quality selection is open to everyone in the chat.
 
-    # Bakım modu: menü eski olsa bile indirme yapılmaz (admin hariç).
+    # Maintenance mode: no download even from a stale menu (admin exempt).
     state = bot_data["bot_state"]
     if state.is_maintenance() and not is_owner:
-        await query.answer("Bot şu an bakımda.", show_alert=True)
+        await query.answer("The bot is under maintenance.", show_alert=True)
         return
 
     if manager.get_user_active_job(job["user_id"]):
@@ -287,12 +286,10 @@ async def _handle_do(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     await query.answer()
 
-    # Format menüsünü TAMAMEN kaldır (önizleme foto/metin olabilir).
-    # Önceden yalnızca butonlar siliniyordu ve menü mesajı sohbette kalıyordu.
-    # İş kaydı burada düşürülür; aşağıdaki hata yollarında tekrar denenmez.
+    # Remove the format menu message entirely (it may be a photo + long
+    # caption). It used to only lose its buttons and stay in the chat.
     await clear_pending_job(context.application, job_id)
 
-    # Temiz bir durum (status) mesajı gönder — ilerleme bunun üzerinde düzenlenir
     status_msg = None
     try:
         status_msg = await context.bot.send_message(
@@ -320,29 +317,25 @@ async def _handle_do(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if status_msg:
             manager.attach_status_message(new_job.job_id, status_msg.message_id)
     except Exception:
-        logger.exception("Format seçimi sonrası indirme başlatılamadı | job=%s", job_id)
+        logger.exception("Download failed to start after format selection | job=%s", job_id)
         if status_msg:
             try:
                 await status_msg.edit_text(t("job_start_failed"))
             except Exception:
                 pass
 
-    # Not: menü mesajı ve iş kaydı yukarıda (indirme başlamadan önce)
-    # temizlendi; hata yolunda da ekranda kalıntı kalmıyor.
 
-
-# "Hepsini İndir" tek seferde en fazla bu kadar içerik alır.
+# "Download all" pulls at most this many items in one go.
 PLAYLIST_BATCH_LIMIT = 50
 
 
 def _spawn_playlist_task(context, pjob: dict, pjob_id: str, indices: list[int], status_msg) -> None:
     """
-    Playlist indirme görevini güvenli biçimde başlatır.
+    Starts the playlist download task safely.
 
-    Önceden düz asyncio.create_task kullanılıyordu: görev bir istisna atarsa
-    hata hiçbir yere yazılmıyor (sessiz başarısızlık) ve pjob["downloading"]
-    True kalıyordu — kullanıcı bir daha playlist indiremiyordu. Artık istisna
-    loglanıyor, bayrak sıfırlanıyor ve kullanıcıya haber veriliyor.
+    A plain asyncio.create_task previously swallowed exceptions silently and
+    left pjob["downloading"] stuck True, blocking further playlist downloads.
+    Now the exception is logged, the flag is cleared, and the user is told.
     """
     task = asyncio.create_task(
         _run_playlist_download(context, pjob_id, indices, status_msg)
@@ -355,7 +348,7 @@ def _spawn_playlist_task(context, pjob: dict, pjob_id: str, indices: list[int], 
         except asyncio.CancelledError:
             pass
         except Exception:
-            logger.exception("Playlist indirme görevi çöktü | pjob=%s", pjob_id)
+            logger.exception("Playlist download task crashed | pjob=%s", pjob_id)
             context.application.bot_data.get("playlist_sessions", {}).pop(pjob_id, None)
             asyncio.create_task(_notify_playlist_failure(context, status_msg))
 
@@ -363,12 +356,12 @@ def _spawn_playlist_task(context, pjob: dict, pjob_id: str, indices: list[int], 
 
 
 async def _notify_playlist_failure(context, status_msg) -> None:
-    """Playlist görevi çöktüğünde kullanıcı sonsuza dek beklemesin."""
+    """Tells the user the playlist task stopped, so they don't wait forever."""
     if not status_msg:
         return
     try:
         await status_msg.edit_text(
-            "❌ Playlist indirme beklenmedik şekilde durdu. Lütfen tekrar dene."
+            "❌ The playlist download stopped unexpectedly. Please try again."
         )
     except Exception:
         pass
@@ -448,11 +441,11 @@ async def _handle_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await _refresh_menu()
         return
 
-    # Bakım/safe modda playlist indirme yapılmaz (admin hariç); gezinme serbest.
+    # No playlist download in maintenance/safe mode (admin exempt); browsing stays open.
     if action in {"pl_item", "pl_dlsel", "pl_dlall"}:
         state = bot_data["bot_state"]
         if (state.is_maintenance() or state.is_safe()) and not is_owner:
-            await query.answer("Bot şu an indirme yapamıyor.", show_alert=True)
+            await query.answer("The bot can't download right now.", show_alert=True)
             return
 
     if action == "pl_item" and len(parts) >= 3:
@@ -460,21 +453,21 @@ async def _handle_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             idx = int(parts[2])
         except ValueError:
             return
-        # İndeks sınırı: eski/bozuk callback verisi IndexError'a yol açıyordu
-        # ve hata görev içinde sessizce kayboluyordu.
+        # Bounds check: a stale/malformed callback used to raise IndexError
+        # silently inside the task.
         if not 0 <= idx < len(pjob.get("entries") or []):
             await query.answer(t("menu_expired_link"), show_alert=True)
             return
         if manager.get_user_active_job(pjob["user_id"]) or pjob.get("downloading"):
             await query.answer(t("wait_active"), show_alert=True)
             return
-        # Bayrağı BURADA (senkron) set ediyoruz. Görev içinde set edilince
-        # hızlı çift tıklama iki eş zamanlı indirme başlatabiliyordu.
+        # Set the flag HERE (synchronously). Setting it inside the task let a
+        # fast double-tap start two downloads at once.
         pjob["downloading"] = True
         raw = str(pjob["entries"][idx].get("title") or f"#{idx+1}")[:60]
         status_msg = await context.bot.send_message(
             chat_id=pjob["chat_id"],
-            text=f"⬇️ <i>{raw}</i> indiriliyor...",
+            text=f"⬇️ <i>{raw}</i> downloading...",
             parse_mode="HTML",
             message_thread_id=pjob.get("thread_id"),
             reply_to_message_id=pjob.get("reply_to"),
@@ -490,13 +483,12 @@ async def _handle_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         entries = pjob.get("entries") or []
 
         if action == "pl_dlsel":
-            # Sınır dışı seçimleri ele (eski oturumdan kalmış olabilir)
             indices = sorted(i for i in pjob.get("selected", set()) if 0 <= i < len(entries))
         else:
             indices = list(range(min(len(entries), PLAYLIST_BATCH_LIMIT)))
 
         if not indices:
-            await query.answer("Hiç seçim yok.", show_alert=True)
+            await query.answer("Nothing selected.", show_alert=True)
             return
 
         pjob["downloading"] = True
@@ -506,17 +498,17 @@ async def _handle_playlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         except Exception:
             pass
 
-        # "Hepsini indir" sessizce 50'de kesiyordu; kullanıcıya söylenmiyordu.
+        # "Download all" used to cut off at 50 silently.
         note = ""
         if action == "pl_dlall" and len(entries) > PLAYLIST_BATCH_LIMIT:
             note = (
-                f"\n<i>Not: playlist {len(entries)} içerik barındırıyor, "
-                f"ilk {PLAYLIST_BATCH_LIMIT} tanesi indirilecek.</i>"
+                f"\n<i>Note: this playlist has {len(entries)} items, "
+                f"only the first {PLAYLIST_BATCH_LIMIT} will be downloaded.</i>"
             )
 
         status_msg = await context.bot.send_message(
             chat_id=pjob["chat_id"],
-            text=f"⏳ {len(indices)} içerik indiriliyor...{note}",
+            text=f"⏳ Downloading {len(indices)} items...{note}",
             parse_mode="HTML",
             message_thread_id=pjob.get("thread_id"),
             reply_to_message_id=pjob.get("reply_to"),

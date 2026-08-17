@@ -35,7 +35,7 @@ def ensure_json_file(path: Path, default: Any) -> None:
 
 def init_runtime_files(data_dir: Path) -> None:
     ensure_json_file(data_dir / "banned_users.json", {"users": [], "groups": []})
-    # bot_state kalıcı "mode" alanı tutar (normal|safe|maintenance)
+    # bot_state holds the persistent run mode (normal|safe|maintenance)
     ensure_json_file(data_dir / "bot_state.json", {"enabled": True, "mode": "normal"})
     ensure_json_file(data_dir / "usage_stats.json", {
         "total_users": 0,
@@ -48,12 +48,9 @@ def init_runtime_files(data_dir: Path) -> None:
         "groups": {},
     })
     ensure_json_file(data_dir / "temp_bans.json", {"users": {}})
-    # Kalıcı veri dosyaları
     ensure_json_file(data_dir / "cache.json", {})
     ensure_json_file(data_dir / "chats.json", {"chats": {}})
-
-    if not (data_dir / "emoji_slots.json").exists():
-        write_json_atomic(data_dir / "emoji_slots.json", {})
+    ensure_json_file(data_dir / "emoji_slots.json", {})
 
 
 def increment_stat(data_dir: Path, key: str, platform: str | None = None) -> None:

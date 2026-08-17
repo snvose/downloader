@@ -24,11 +24,11 @@ from bot.utils import platform_name
 
 
 class LiveStreamError(RuntimeError):
-    """Canlı yayın tespit edildi — indirme hiç başlatılmaz."""
+    """A livestream was detected — the download is never started."""
 
 
-# Tek bir indirmenin diskte kaplayabileceği üst sınır (bayt).
-# Sonsuz akışlara karşı son savunma: yt-dlp bu sınırı aşınca durur.
+# Hard cap on how much disk a single download may use (bytes).
+# Last line of defense against endless streams: yt-dlp stops once this is hit.
 MAX_DOWNLOAD_BYTES = 4 * 1024 * 1024 * 1024  # 4 GB
 
 
@@ -38,7 +38,7 @@ HTTP_HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/125.0.0.0 Safari/537.36"
     ),
-    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
 SKIP_SUFFIXES = (
@@ -57,8 +57,8 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".opus", ".ogg", ".wav", ".flac"}
 MEDIA_EXTS = VIDEO_EXTS | IMAGE_EXTS | AUDIO_EXTS
 
-# Sosyal platformlar: çoklu medya (carousel/slideshow) içerebilir, bu yüzden
-# noplaylist kapatılır ve yt-dlp başarısız olursa gallery-dl denenir.
+# Social platforms can contain multiple media items (carousel/slideshow), so
+# noplaylist is disabled for them and gallery-dl is tried if yt-dlp fails.
 SOCIAL_PLATFORMS = {
     "Instagram",
     "TikTok",
@@ -66,7 +66,6 @@ SOCIAL_PLATFORMS = {
     "Pinterest",
     "X/Twitter",
     "Facebook",
-    # Faz 2: galeri/çoklu görsel içeriği olan platformlar
     "Tumblr",
     "Imgur",
     "Bluesky",
@@ -77,7 +76,7 @@ SOCIAL_PLATFORMS = {
 def collect_files(download_dir: Path, *, mode: str = "auto") -> list[str]:
     files: list[str] = []
 
-    # Thumbnail modunda yalnızca resim dosyaları toplanır.
+    # Thumbnail mode only collects image files.
     target_exts = IMAGE_EXTS if mode == "thumbnail" else MEDIA_EXTS
 
     for root, _, names in os.walk(download_dir):
@@ -123,7 +122,7 @@ def _download_with_gallery_dl(
     cookies_file: Path | None,
     queue: Any,
 ) -> tuple[list[str], str, dict[str, Any]]:
-    queue.put(log_event(job_id, "warning", "gallery-dl fallback deneniyor."))
+    queue.put(log_event(job_id, "warning", "Trying the gallery-dl fallback."))
 
     cmd = _gallery_command()
     cmd += ["-d", str(download_dir)]
@@ -148,14 +147,14 @@ def _download_with_gallery_dl(
         queue.put(log_event(job_id, "info", "gallery-dl stdout: " + stdout[-700:]))
 
     if proc.returncode != 0:
-        raise RuntimeError("gallery-dl başarısız: " + (stderr or stdout or "bilinmeyen hata")[-1000:])
+        raise RuntimeError("gallery-dl failed: " + (stderr or stdout or "unknown error")[-1000:])
 
     files = collect_files(download_dir)
     if not files:
-        raise RuntimeError("gallery-dl dosya indirmedi.")
+        raise RuntimeError("gallery-dl downloaded no files.")
 
-    # gallery-dl'in getirdiği videolar da aynı uyumluluk katmanından geçer;
-    # bu dal atlandığında yedek yolla gelen dosyalar hâlâ vp9/av1 kalıyordu.
+    # Videos from gallery-dl go through the same compatibility layer; this
+    # branch used to be skipped and its files still came out as vp9/av1.
     files = _ensure_playable(files, job_id=job_id, queue=queue)
 
     info = {
@@ -198,23 +197,23 @@ def _cookie_names_for_domain(cookie_file: Path, domain_keyword: str) -> list[str
     return sorted(names)
 
 
-# Netscape cookie dosyalarının ilk satırında bulunması ZORUNLU sihirli başlık.
-# Hem yt-dlp hem Python'un MozillaCookieJar'ı bu satır yoksa dosyayı hiç
-# okumuyor ve "does not look like a Netscape format cookies file" diyor.
+# The magic header line REQUIRED at the top of a Netscape cookie file. Both
+# yt-dlp and Python's MozillaCookieJar refuse to read the file without it and
+# say "does not look like a Netscape format cookies file".
 _NETSCAPE_HEADER = "# Netscape HTTP Cookie File"
 
 
 def _repair_cookie_header(cookies_file: Path, job_id: str, queue: Any) -> None:
     """
-    Cookie dosyasının başındaki sihirli başlığı eksikse geri koyar.
+    Restores the magic header at the top of the cookie file if it's missing.
 
-    Dosyanın en üstüne elle yeni çerez yapıştırıldığında başlık satırının
-    üzerine yazılıyor. Sonuç TÜM platformları birden çökertiyordu: içerik
-    kusursuz olsa bile yt-dlp dosyayı reddediyor, YouTube dahil hiçbir
-    cookie'li indirme çalışmıyordu.
+    Pasting new cookies at the very top of the file overwrites the header
+    line. The result used to break EVERY platform at once: even with
+    perfectly valid content, yt-dlp rejected the file and no cookie-based
+    download worked, YouTube included.
 
-    Onarım yalnızca gövde gerçekten geçerli çerez satırlarından oluşuyorsa
-    yapılır — bozuk bir dosyaya başlık ekleyip "düzeldi" sanmak daha kötü.
+    The repair only happens when the body actually looks like valid cookie
+    lines — patching a broken file and calling it "fixed" would be worse.
     """
     try:
         text = cookies_file.read_text(encoding="utf-8", errors="ignore")
@@ -227,51 +226,51 @@ def _repair_cookie_header(cookies_file: Path, job_id: str, queue: Any) -> None:
         if not stripped:
             continue
         if stripped.startswith("# Netscape") or stripped.startswith("# HTTP Cookie File"):
-            return  # başlık yerinde
+            return  # header is already there
         break
 
-    # Gövde geçerli mi? En az bir satır 7 sekme alanlı olmalı.
-    veri_satiri = 0
+    # Is the body valid? At least one line must have 7 tab-separated fields.
+    data_lines = 0
     for line in lines:
         stripped = line.strip()
         if not stripped or (stripped.startswith("#") and not stripped.startswith("#HttpOnly_")):
             continue
         if len(line.split("\t")) == 7:
-            veri_satiri += 1
+            data_lines += 1
         else:
             queue.put(log_event(
                 job_id, "warning",
-                "Cookie dosyasının biçimi bozuk (sekmeyle ayrılmamış satır var) — "
-                "tarayıcı eklentisinden yeniden dışa aktar.",
+                "Cookie file format looks broken (a line isn't tab-separated) — "
+                "re-export it from your browser extension.",
             ))
             return
 
-    if not veri_satiri:
+    if not data_lines:
         return
 
     try:
         cookies_file.write_text(
-            _NETSCAPE_HEADER + "\n# Otomatik onarıldı: eksik başlık satırı geri eklendi.\n" + text,
+            _NETSCAPE_HEADER + "\n# Auto-repaired: missing header line restored.\n" + text,
             encoding="utf-8",
         )
     except OSError as exc:
-        queue.put(log_event(job_id, "warning", f"Cookie başlığı onarılamadı: {short_error(exc)}"))
+        queue.put(log_event(job_id, "warning", f"Could not repair the cookie header: {short_error(exc)}"))
         return
 
     queue.put(log_event(
         job_id, "warning",
-        f"Cookie dosyasında '{_NETSCAPE_HEADER}' başlığı eksikti, otomatik eklendi "
-        f"({veri_satiri} çerez korundu).",
+        f"The '{_NETSCAPE_HEADER}' header was missing from the cookie file, "
+        f"restored automatically ({data_lines} cookies kept).",
     ))
 
 
 def _log_cookie_status(job_id: str, url: str, cookies_file: Path | None, queue: Any) -> None:
     if not cookies_file:
-        queue.put(log_event(job_id, "warning", "Cookie dosyası ayarlı değil."))
+        queue.put(log_event(job_id, "warning", "No cookie file configured."))
         return
 
     if not cookies_file.exists():
-        queue.put(log_event(job_id, "warning", f"Cookie dosyası yok: {cookies_file}"))
+        queue.put(log_event(job_id, "warning", f"Cookie file not found: {cookies_file}"))
         return
 
     try:
@@ -279,7 +278,7 @@ def _log_cookie_status(job_id: str, url: str, cookies_file: Path | None, queue: 
     except OSError:
         size = 0
 
-    queue.put(log_event(job_id, "info", f"Cookie dosyası aktif: {cookies_file} ({size} bytes)"))
+    queue.put(log_event(job_id, "info", f"Cookie file active: {cookies_file} ({size} bytes)"))
 
     _repair_cookie_header(cookies_file, job_id, queue)
 
@@ -287,13 +286,13 @@ def _log_cookie_status(job_id: str, url: str, cookies_file: Path | None, queue: 
 
     if "facebook" in host or "fb.watch" in host:
         names = _cookie_names_for_domain(cookies_file, "facebook")
-        safe_names = ", ".join(names[:20]) if names else "yok"
-        queue.put(log_event(job_id, "info", f"Facebook cookie isimleri: {safe_names}"))
+        safe_names = ", ".join(names[:20]) if names else "none"
+        queue.put(log_event(job_id, "info", f"Facebook cookie names: {safe_names}"))
 
     if "tiktok" in host:
         names = _cookie_names_for_domain(cookies_file, "tiktok")
-        safe_names = ", ".join(names[:20]) if names else "yok"
-        queue.put(log_event(job_id, "info", f"TikTok cookie isimleri: {safe_names}"))
+        safe_names = ", ".join(names[:20]) if names else "none"
+        queue.put(log_event(job_id, "info", f"TikTok cookie names: {safe_names}"))
 
 
 def _safe_int(value: Any) -> int | None:
@@ -386,35 +385,35 @@ def _is_instagram_url(url: str) -> bool:
     return "instagram" in (urlparse(url).netloc or "").lower()
 
 
-# Instagram oturum durumu, TTL'li önbellek: (zaman, durum)
-# Her iş için ağ isteği atmamak ve kilitli bir hesabı sürekli dürtmemek için.
+# TTL cache for the Instagram session state: (timestamp, state).
+# Avoids a network request per job and repeatedly poking a locked account.
 _IG_SESSION_CACHE: tuple[float, str] = (0.0, "")
 _IG_SESSION_TTL = 15 * 60
-# Kilit bildirimi panele en fazla bu aralıkta bir düşer (sayaç şişmesin).
+# The panel notification for a lock is rate-limited to this interval.
 _IG_CHECKPOINT_REPORTED = 0.0
 
 IG_CHECKPOINT_MESSAGE = (
-    "Instagram hesabı kilitli (checkpoint_required) — cookie'nin sahibi hesap "
-    "instagram.com/challenge/ adresinde doğrulama bekliyor. Doğrulama insan "
-    "tarafından tamamlanıp cookie yeniden dışa aktarılmadan cookie'li "
-    "Instagram indirmeleri çalışmaz."
+    "The Instagram account is locked (checkpoint_required) — the cookie's "
+    "owner account is waiting for verification at instagram.com/challenge/. "
+    "Cookie-based Instagram downloads won't work until a human completes "
+    "the verification and the cookie is re-exported."
 )
 
 
 def _instagram_session_state(cookies_file: Path | None) -> str:
     """
-    cookies.txt'teki Instagram oturumunun durumunu döndürür.
+    Returns the state of the Instagram session in cookies.txt.
 
-    "ok"          — oturum çalışıyor
-    "checkpoint"  — hesap kilitli, Instagram doğrulama istiyor
-    "logged_out"  — oturum tanınmıyor (giriş sayfasına yönleniyor)
-    "unknown"     — belirlenemedi (ağ hatası, cookie yok vb.)
+    "ok"          — the session works
+    "checkpoint"  — the account is locked, Instagram wants verification
+    "logged_out"  — the session isn't recognized (redirected to login)
+    "unknown"     — could not be determined (network error, no cookie, etc.)
 
-    NEDEN GEREKLİ: kilitli hesapta yt-dlp'nin gördüğü tek şey
-    "HTTP Error 400: Bad Request"; asıl sebep yanıt GÖVDESİNDE duruyor ve
-    yt-dlp onu hata metnine koymuyor. Gövde okunmadan bu durum, sıradan bir
-    ağ hatasından ayırt edilemiyordu — admin panelinde hiçbir uyarı çıkmıyor,
-    kullanıcı da "HTTP Error 400" görüyordu.
+    WHY THIS IS NEEDED: on a locked account, all yt-dlp sees is
+    "HTTP Error 400: Bad Request"; the real reason is in the response BODY,
+    which yt-dlp doesn't surface. Without reading the body this was
+    indistinguishable from an ordinary network error — no warning in the
+    admin panel, and the user just saw "HTTP Error 400".
     """
     global _IG_SESSION_CACHE
 
@@ -430,8 +429,8 @@ def _instagram_session_state(cookies_file: Path | None) -> str:
         jar = MozillaCookieJar(str(cookies_file))
         jar.load(ignore_discard=True, ignore_expires=True)
         opener = build_opener(HTTPCookieProcessor(jar))
-        # feed/timeline/ oturum gerektiriyor, medya kimliği istemiyor ve
-        # kilitli hesapta checkpoint gövdesini doğrudan döndürüyor.
+        # feed/timeline/ requires a session, doesn't need a media id, and
+        # returns the checkpoint body directly on a locked account.
         request = Request(
             "https://i.instagram.com/api/v1/feed/timeline/",
             headers={
@@ -464,12 +463,11 @@ def _instagram_session_state(cookies_file: Path | None) -> str:
 
 def _spotify_embed_data(url: str) -> dict[str, Any]:
     """
-    Spotify embed sayfasındaki __NEXT_DATA__ JSON'ını okur.
+    Reads the __NEXT_DATA__ JSON blob from the Spotify embed page.
 
-    Bu sayfa API anahtarı istemez ve şarkının GERÇEK künyesini verir:
-    ad, sanatçı(lar), yayın tarihi ve 640x640 albüm kapağı. YouTube'dan
-    gelen kanal adı / yükleme tarihi / video küçük resminin aksine bunlar
-    şarkının kendi bilgileri.
+    This page needs no API key and gives the track's REAL details: name,
+    artist(s), release date and a 640x640 cover — unlike the channel name /
+    upload date / video thumbnail we'd get from YouTube.
     """
     m = re.search(r"/track/([A-Za-z0-9]+)", url)
     if not m:
@@ -501,7 +499,7 @@ def _spotify_embed_data(url: str) -> dict[str, Any]:
 
 
 def _spotify_cover_url(entity: dict[str, Any]) -> str:
-    """Embed verisindeki en büyük albüm kapağını seçer."""
+    """Picks the largest album cover from the embed data."""
     images = (entity.get("visualIdentity") or {}).get("image") or []
     best = ""
     best_size = 0
@@ -516,23 +514,24 @@ def _spotify_cover_url(entity: dict[str, Any]) -> str:
 
 def _spotify_track_info(url: str, queue: Any, job_id: str) -> dict[str, Any]:
     """
-    Spotify track sayfasından şarkının künyesini okur.
+    Reads a Spotify track page for the track's credits.
 
-    yt-dlp Spotify'dan ses indiremez (DRM). Bu yüzden spotdl mantığı uygulanır:
-    Spotify metadata -> YouTube'da ara -> oradan ses indir.
+    yt-dlp can't download audio from Spotify (DRM), so the spotdl approach is
+    used: read Spotify metadata -> search YouTube -> download audio from
+    there.
 
-    Dönüş: {"query", "title", "artist", "release_date", "cover_url"}
-    Önceden yalnızca arama metni ("query") döndürülüyordu; geri kalan künye
-    okunup atılıyordu ve dosyaya YouTube'un verisi yazılıyordu (sanatçı
-    yerine kanal adı "Hidra Official", yıl yerine video yükleme tarihi,
-    tür yerine YouTube kategorisi "Entertainment"). Artık kaynak künye
-    korunuyor.
+    Returns {"query", "title", "artist", "release_date", "cover_url"}.
+    Previously only the search text ("query") was returned and the rest of
+    the credits was discarded, so the file ended up tagged with YouTube's
+    data instead (channel name "Hidra Official" instead of the artist, the
+    video's upload date instead of the release year, YouTube's category
+    "Entertainment" instead of a genre). The real credits are kept now.
     """
     path = (urlparse(url).path or "").lower()
     if "/track/" not in path:
         raise RuntimeError(
-            "Spotify'dan yalnızca tekil şarkı (track) linkleri indirilebilir. "
-            "Albüm/playlist linkleri desteklenmiyor."
+            "Only single track Spotify links can be downloaded. "
+            "Albums/playlists are not supported."
         )
 
     title = ""
@@ -541,7 +540,7 @@ def _spotify_track_info(url: str, queue: Any, job_id: str) -> dict[str, Any]:
     cover_url = ""
     page = ""
 
-    # ── 1. Tercih edilen kaynak: embed sayfasının yapılandırılmış JSON'ı ──
+    # ── 1. Preferred source: the embed page's structured JSON ──
     try:
         entity = _spotify_embed_data(url)
         page = str(entity.pop("_page", "") or "")
@@ -561,9 +560,9 @@ def _spotify_track_info(url: str, queue: Any, job_id: str) -> dict[str, Any]:
 
         cover_url = _spotify_cover_url(entity)
     except Exception as exc:
-        queue.put(log_event(job_id, "warning", f"Spotify embed okunamadı: {exc}"))
+        queue.put(log_event(job_id, "warning", f"Could not read the Spotify embed: {exc}"))
 
-    # ── 2. Yedek: oEmbed ucu (başlık verir, sanatçı vermez) ──
+    # ── 2. Fallback: the oEmbed endpoint (gives a title, not an artist) ──
     if not title:
         oembed = "https://open.spotify.com/oembed?url=" + url
         try:
@@ -575,10 +574,11 @@ def _spotify_track_info(url: str, queue: Any, job_id: str) -> dict[str, Any]:
             if not author:
                 author = str(data.get("author_name") or "").strip()
         except Exception as exc:
-            queue.put(log_event(job_id, "warning", f"Spotify oembed başarısız: {exc}"))
+            queue.put(log_event(job_id, "warning", f"Spotify oembed failed: {exc}"))
 
-    # ── 3. Son çare: embed sayfasının ham HTML'inde regex ──
-    # __NEXT_DATA__ yapısı değişirse akış tümden durmasın diye duruyor.
+    # ── 3. Last resort: regex over the embed page's raw HTML ──
+    # Kept separate so a change in __NEXT_DATA__'s shape doesn't break the
+    # whole flow.
     if page and (not title or not author):
         if not author:
             m = (re.search(r'"artists":\[\{"name":"([^"]+)"', page)
@@ -592,10 +592,10 @@ def _spotify_track_info(url: str, queue: Any, job_id: str) -> dict[str, Any]:
                 title = html.unescape(m.group(1)).strip()
 
     if not title:
-        raise RuntimeError("Spotify şarkı bilgisi alınamadı.")
+        raise RuntimeError("Could not fetch Spotify track info.")
 
     query = f"{title} {author}".strip()
-    queue.put(log_event(job_id, "info", f"Spotify -> YouTube araması: {query}"))
+    queue.put(log_event(job_id, "info", f"Spotify -> YouTube search: {query}"))
 
     return {
         "query": query,
@@ -608,13 +608,15 @@ def _spotify_track_info(url: str, queue: Any, job_id: str) -> dict[str, Any]:
 
 def _strip_youtube_tags(path: Path) -> None:
     """
-    ffmpeg'in YouTube verisinden yazdığı, şarkıya ait OLMAYAN etiketleri siler.
+    Removes the tags ffmpeg wrote from YouTube data that do NOT belong to the
+    track.
 
-    FFmpegMetadata son işlemcisi video sayfasından ne bulursa yazıyor:
-    TCON'a YouTube kategorisi ("Entertainment"), yoruma video linki,
-    açıklamaya kanalın sosyal medya listesi, TDRC'ye video yükleme tarihi.
-    Bir şarkı dosyasında bunların hepsi yanlış bilgi. Doğrusu Spotify'dan
-    geliyor; gelmeyen alan boş bırakılır, uydurulmaz.
+    The FFmpegMetadata postprocessor writes whatever it finds on the video
+    page: YouTube's category ("Entertainment") into TCON, a video link into
+    the comment, the channel's social links into the description, the
+    video's upload date into TDRC. All of that is wrong on a music file. The
+    correct data comes from Spotify; a field that isn't provided there is
+    left empty rather than guessed.
     """
     if path.suffix.lower() != ".mp3":
         return
@@ -643,16 +645,17 @@ def _apply_spotify_metadata(
     job_id: str,
 ) -> None:
     """
-    İndirilen sesin etiketlerini Spotify künyesiyle DEĞİŞTİRİR.
+    REPLACES the downloaded audio's tags with the Spotify credits.
 
-    Ses YouTube'dan geldiği için yt-dlp/ffmpeg oraya YouTube'un verisini
-    yazıyor: sanatçı yerine kanal adı, yıl yerine video yükleme tarihi,
-    tür yerine YouTube kategorisi, başlık yerine video başlığı. Kullanıcı
-    Spotify linki gönderdiğine göre doğru künye Spotify'ınki.
+    The audio comes from YouTube, so yt-dlp/ffmpeg wrote YouTube's data onto
+    it: the channel name instead of the artist, the upload date instead of
+    the year, YouTube's category instead of a genre, the video title instead
+    of the track title. Since the user sent a Spotify link, the correct
+    credits are Spotify's.
 
-    Albüm kapağı da Spotify'ın 640x640 kare kapağıyla değiştirilir; YouTube
-    küçük resmi 16:9 video karesi olduğu için kırpılınca albüm kapağı gibi
-    durmuyor.
+    The cover is also replaced with Spotify's 640x640 square cover; the
+    YouTube thumbnail is a 16:9 video frame that doesn't look like an album
+    cover once cropped.
     """
     audio = [Path(f) for f in files if Path(f).suffix.lower() in AUDIO_EXTS]
     if not audio:
@@ -670,8 +673,8 @@ def _apply_spotify_metadata(
     for path in audio:
         _strip_youtube_tags(path)
 
-        # Spotify kapağını ses dosyasının yanına .jpg olarak yaz; metadata
-        # katmanı küçük resmi orada arıyor ve .jpg'yi .webp'den önce görüyor.
+        # Write the Spotify cover next to the audio file as .jpg; the
+        # metadata layer looks for it there and finds .jpg before .webp.
         cover_url = track.get("cover_url")
         if cover_url:
             try:
@@ -682,14 +685,14 @@ def _apply_spotify_metadata(
                     path.with_suffix(".jpg").write_bytes(data)
             except Exception as exc:
                 queue.put(log_event(
-                    job_id, "warning", f"Spotify kapağı indirilemedi: {exc}"
+                    job_id, "warning", f"Could not download the Spotify cover: {exc}"
                 ))
 
         written = apply_audio_metadata(path, info, job_id=job_id)
         if written:
             queue.put(log_event(
                 job_id, "info",
-                "Spotify künyesi yazıldı: " + ", ".join(sorted(written)),
+                "Spotify credits written: " + ", ".join(sorted(written)),
             ))
 
 
@@ -698,27 +701,27 @@ def _is_tiktok_url(url: str) -> bool:
     return "tiktok" in host
 
 
-# ── TikTok slayt (fotoğraf) gönderileri ──────────────────────────────────────
-# TikTok'ta iki tür gönderi var: /video/ ve /photo/. yt-dlp yalnızca ilkini
-# tanıyor; TikTokIE._VALID_URL /photo/ ile HİÇ eşleşmiyor, extractor'da
-# imagePost alanını okuyan tek satır bile yok. Sonuç: fotoğraf gönderisi
-# "Unsupported URL" ile düşüyor, gallery-dl de adresi /video/'ya çevirip
-# 403 yiyor (TikTok'un JS challenge'ını çözemiyor). Yani slayt gönderileri
-# botta tamamen indirilemez durumdaydı.
+# ── TikTok photo (slideshow) posts ────────────────────────────────────────
+# TikTok has two kinds of posts: /video/ and /photo/. yt-dlp only recognizes
+# the first — TikTokIE._VALID_URL never matches /photo/, and the extractor
+# has no code reading the imagePost field at all. The result: a photo post
+# fails with "Unsupported URL", and gallery-dl also rewrites the URL to
+# /video/ and gets a 403 (it can't solve TikTok's JS challenge). So slideshow
+# posts were entirely undownloadable.
 #
-# Çözüm: adresi /video/'ya çevirip sayfayı yt-dlp'ye çektiriyoruz — challenge
-# çözme kodu zaten onda var ve çalışıyor. Görseller o adımın ürettiği ham
-# veride (imagePost.images) duruyor, biz onu okuyup indiriyoruz.
+# Fix: rewrite the URL to /video/ and let yt-dlp fetch the page — its
+# challenge-solving code already works there. The images live in the raw
+# data that step produces (imagePost.images); we read and download them.
 
 _TIKTOK_SHORT_HOSTS = {"vm.tiktok.com", "vt.tiktok.com"}
 
 
 def _resolve_tiktok_url(url: str) -> str:
     """
-    vt./vm. kısa linkini gerçek adrese çevirir.
+    Resolves a vt./vm. short link to its real address.
 
-    Kısa link fotoğraf mı video mu belli etmiyor; hangi dalda ilerleyeceğimizi
-    ancak yönlendirmeyi izleyerek bilebiliyoruz.
+    A short link doesn't say whether it's a photo or a video post; the only
+    way to know which branch to take is to follow the redirect.
     """
     parsed = urlparse(url)
     host = (parsed.netloc or "").lower()
@@ -728,8 +731,8 @@ def _resolve_tiktok_url(url: str) -> str:
     if not is_short:
         return url
 
-    # HEAD yeter: yalnızca yönlendirmenin bittiği adres lazım, sayfanın
-    # kendisi değil (her kısa linkte ~400 KB gövde indirmenin anlamı yok).
+    # HEAD is enough: only the final redirected address is needed, not the
+    # page body (no point downloading ~400 KB per short link).
     try:
         with urlopen(Request(url, headers=HTTP_HEADERS, method="HEAD"), timeout=15) as resp:
             return resp.url or url
@@ -738,7 +741,7 @@ def _resolve_tiktok_url(url: str) -> str:
 
 
 def _tiktok_photo_id(url: str) -> str:
-    """Slayt gönderisiyse gönderi id'sini, değilse boş string döner."""
+    """Returns the post id if this is a photo post, else an empty string."""
     if not _is_tiktok_url(url):
         return ""
     match = re.search(r"/photo/(\d+)", urlparse(url).path)
@@ -755,10 +758,11 @@ def _tiktok_photo_detail(
     job_id: str,
 ) -> dict[str, Any]:
     """
-    Slayt gönderisinin ham TikTok verisini döner.
+    Returns the raw TikTok data for a photo post.
 
-    yt-dlp'nin iç metodu çağrılıyor; sürüm yükseltmesinde adı değişirse
-    indirme çökmesin diye AttributeError ayrıca ele alınıyor.
+    Calls into yt-dlp's internal method; AttributeError is handled
+    separately in case a version upgrade renames it, so the download doesn't
+    just crash.
     """
     from yt_dlp.extractor.tiktok import TikTokIE
 
@@ -782,15 +786,15 @@ def _tiktok_photo_detail(
             detail, _status = extractor._extract_web_data_and_status(video_url, photo_id)
         except AttributeError as exc:
             raise RuntimeError(
-                "yt-dlp'nin TikTok iç arayüzü değişmiş, slayt gönderisi "
-                f"okunamadı: {exc}"
+                f"yt-dlp's internal TikTok interface changed, couldn't read the "
+                f"photo post: {exc}"
             ) from exc
 
     return detail if isinstance(detail, dict) else {}
 
 
 def _tiktok_photo_urls(detail: dict[str, Any]) -> list[str]:
-    """imagePost.images[] içinden görsel adreslerini sırasıyla çıkarır."""
+    """Extracts image URLs, in order, from imagePost.images[]."""
     images = ((detail.get("imagePost") or {}).get("images")) or []
     urls: list[str] = []
     for image in images:
@@ -812,13 +816,13 @@ def _download_tiktok_photos(
     queue: Any,
     cookies_file: Path | None,
 ) -> tuple[list[str], str, dict[str, Any]]:
-    """Slayt gönderisinin görsellerini indirir."""
+    """Downloads the images of a slideshow post."""
     errors: list[str] = []
     detail: dict[str, Any] = {}
 
     for label, use_cookies in (("cookies", True), ("cookieless", False)):
         try:
-            queue.put(log_event(job_id, "info", f"TikTok slayt denemesi: {label}"))
+            queue.put(log_event(job_id, "info", f"TikTok photo attempt: {label}"))
             detail = _tiktok_photo_detail(
                 video_url, photo_id,
                 cookies_file=cookies_file, use_cookies=use_cookies,
@@ -826,18 +830,18 @@ def _download_tiktok_photos(
             )
             if _tiktok_photo_urls(detail):
                 break
-            errors.append(f"{label}: gönderide görsel bulunamadı")
+            errors.append(f"{label}: no images found in the post")
         except Exception as exc:
             message = short_error(exc)
             errors.append(f"{label}: {message}")
             queue.put(log_event(
-                job_id, "warning", f"TikTok slayt denemesi başarısız [{label}]: {message}",
+                job_id, "warning", f"TikTok photo attempt failed [{label}]: {message}",
             ))
 
     image_urls = _tiktok_photo_urls(detail)
     if not image_urls:
         raise RuntimeError(
-            "TikTok slayt gönderisinin görselleri okunamadı — " + " | ".join(errors)
+            "Could not read the TikTok slideshow's images — " + " | ".join(errors)
         )
 
     title = str((detail.get("desc") or "")).strip()
@@ -852,7 +856,7 @@ def _download_tiktok_photos(
         except Exception as exc:
             queue.put(log_event(
                 job_id, "warning",
-                f"Slayt görseli {index} indirilemedi: {short_error(exc)}",
+                f"Could not download slideshow image {index}: {short_error(exc)}",
             ))
             continue
 
@@ -862,11 +866,11 @@ def _download_tiktok_photos(
         files.append(str(target))
 
     if not files:
-        raise RuntimeError("TikTok slayt görsellerinin hiçbiri indirilemedi.")
+        raise RuntimeError("None of the TikTok slideshow images could be downloaded.")
 
     queue.put(log_event(
         job_id, "info",
-        f"TikTok slayt gönderisi: {len(files)}/{len(image_urls)} görsel indirildi.",
+        f"TikTok slideshow: {len(files)}/{len(image_urls)} images downloaded.",
     ))
 
     return files, title, {
@@ -879,8 +883,8 @@ def _download_tiktok_photos(
     }
 
 
-# yt-dlp hata mesajlarının sonuna eklediği, teşhis için değeri olmayan
-# yönlendirme metinleri. Mesaj kısaltılırken bunlar atılır.
+# Trailing boilerplate yt-dlp appends to its error messages that carries no
+# diagnostic value; stripped when the message is shortened.
 _ERROR_BOILERPLATE = re.compile(
     r"\s*(?:Use --cookies-from-browser|Use --cookies |\. Also see |"
     r"For tips on how to effectively export|"
@@ -894,12 +898,12 @@ _ERROR_BOILERPLATE = re.compile(
 
 def short_error(error: Any, limit: int = 300) -> str:
     """
-    Hata mesajını teşhis edilebilir biçimde kısaltır.
+    Shortens an error message to something diagnosable.
 
-    Mesajı SONDAN değil BAŞTAN keser. yt-dlp'nin YouTube hatalarında asıl
-    sebep ("Sign in to confirm you're not a bot") en başta, wiki linki
-    içeren yönlendirme metni ise en sonda durur; sondan kesmek tam olarak
-    işe yarayan kısmı atıp geriye yalnızca boilerplate bırakıyordu.
+    Cuts the message from the START, not the end. In yt-dlp's YouTube errors
+    the real cause ("Sign in to confirm you're not a bot") comes first, and
+    the wiki-link boilerplate comes last; cutting from the end used to strip
+    exactly the useful part and keep only the boilerplate.
     """
     text = " ".join(str(error or "").split())
     text = _ERROR_BOILERPLATE.sub("", text).strip(" .")
@@ -908,15 +912,15 @@ def short_error(error: Any, limit: int = 300) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-# Her cihazda (özellikle macOS QuickTime/Safari ve iOS) sorunsuz açılan
-# birleşim. Bunların dışındaki her şey mp4 kabında "codec desteklenmiyor"
-# hatası veriyor: dosya açılıyor ama oynatılmıyor.
+# The combination that plays cleanly on every device (especially macOS
+# QuickTime/Safari and iOS). Anything else in an mp4 container triggers
+# "unsupported codec" — the file opens but won't play.
 _COMPATIBLE_VCODECS = {"h264", "avc1"}
 _COMPATIBLE_ACODECS = {"aac", "mp4a"}
 
 
 def _probe_streams(path: Path) -> tuple[str, str] | None:
-    """Videonun (video_codec, ses_codec) çiftini döndürür. Okunamazsa None."""
+    """Returns the video's (video_codec, audio_codec). None if unreadable."""
     if not shutil.which("ffprobe"):
         return None
     try:
@@ -946,14 +950,15 @@ def _probe_streams(path: Path) -> tuple[str, str] | None:
 
 def _has_faststart(path: Path) -> bool:
     """
-    mp4'te moov atomu mdat'tan önce mi? Değilse oynatıcı dosyanın tamamını
-    indirmeden başlatamıyor (Telegram'da içeriden oynatma böyle takılıyordu).
+    Is the moov atom before mdat in this mp4? If not, a player can't start
+    playback without downloading the whole file (this is what made in-app
+    playback on Telegram stall).
     """
     try:
         with open(path, "rb") as handle:
             head = handle.read(1024 * 512)
     except OSError:
-        return True  # okuyamıyorsak dokunma
+        return True  # can't read it, leave it alone
     moov, mdat = head.find(b"moov"), head.find(b"mdat")
     if moov == -1:
         return False
@@ -962,13 +967,13 @@ def _has_faststart(path: Path) -> bool:
 
 def _ensure_playable(files: list[str], *, job_id: str, queue: Any) -> list[str]:
     """
-    İndirilen videoları her cihazda oynatılabilir hale getirir.
+    Makes downloaded videos playable on every device.
 
-    Format seçici çoğu durumda h264+aac'ı zaten getiriyor; bu katman yalnızca
-    getiremediğinde (platformda h264 sürümü hiç yoksa) devreye giren son çare.
-    Uyumlu dosyalarda transcode YAPILMAZ — 28 sn'lik bir reel'de transcode
-    ~20 sn sürüyor ve dosyayı iki katına çıkarıyor. Uyumlu ama faststart'sız
-    dosyalar yalnızca stream-copy ile yeniden paketlenir (saniyenin altında).
+    The format selector already returns h264+aac in most cases; this layer
+    only kicks in when it couldn't (the platform has no h264 variant at
+    all). Compatible files are NEVER transcoded — transcoding a 28-second
+    reel takes ~20s and doubles the file size. Compatible files missing
+    faststart are only remuxed with stream-copy (sub-second).
     """
     if not shutil.which("ffmpeg"):
         return files
@@ -994,11 +999,11 @@ def _ensure_playable(files: list[str], *, job_id: str, queue: Any) -> list[str]:
             result.append(item)
             continue
 
-        target = path.with_name(path.stem + ".uyumlu.mp4")
-        # Akışları AÇIKÇA eşle. ffmpeg'in öntanımlı seçimi her türden yalnızca
-        # BİRİNİ alıyor ve -c:s verilmediğinde gömülü altyazıyı tamamen
-        # düşürüyordu: altyazılı bir video bu katmandan geçtiğinde altyazısı
-        # siliniyordu. "?" son ek'i, o akış yoksa hata verilmemesini sağlar.
+        target = path.with_name(path.stem + ".compat.mp4")
+        # Map streams EXPLICITLY. ffmpeg's default picks only ONE of each
+        # type, and without -c:s it drops embedded subtitles entirely — a
+        # subtitled video used to lose its subtitles going through this
+        # layer. The "?" suffix avoids an error when that stream is absent.
         command = [
             "ffmpeg", "-y", "-v", "error", "-i", str(path),
             "-map", "0:v:0", "-map", "0:a?", "-map", "0:s?",
@@ -1017,18 +1022,18 @@ def _ensure_playable(files: list[str], *, job_id: str, queue: Any) -> list[str]:
             command += ["-c:a", "aac", "-b:a", "192k"]
         command += ["-movflags", "+faststart", str(target)]
 
-        what = "yeniden paketleniyor" if (video_ok and audio_ok) else \
-            f"h264/aac'ye dönüştürülüyor ({vcodec}/{acodec or 'ses yok'})"
-        queue.put(log_event(job_id, "info", f"Video uyumluluk: {path.name} {what}."))
+        what = "remuxing" if (video_ok and audio_ok) else \
+            f"transcoding to h264/aac ({vcodec}/{acodec or 'no audio'})"
+        queue.put(log_event(job_id, "info", f"Video compatibility: {path.name} {what}."))
 
         try:
             subprocess.run(command, capture_output=True, timeout=1800, check=True)
         except (OSError, subprocess.SubprocessError) as exc:
-            # Dönüştürme başarısızsa orijinali göndermek, hiç göndermemekten iyi.
+            # Sending the original beats sending nothing if the conversion fails.
             target.unlink(missing_ok=True)
             queue.put(log_event(
                 job_id, "warning",
-                f"Video uyumluluk dönüşümü başarısız, orijinal gönderiliyor: {short_error(exc)}",
+                f"Video compatibility conversion failed, sending the original: {short_error(exc)}",
             ))
             result.append(item)
             continue
@@ -1050,10 +1055,10 @@ def _ensure_playable(files: list[str], *, job_id: str, queue: Any) -> list[str]:
 
 def _clear_partial_files(download_dir: Path) -> None:
     """
-    Başarısız denemeden kalan dosyaları siler.
+    Deletes files left behind by a failed attempt.
 
-    Yarım kalan .part/.ytdl dosyaları sıradaki denemenin sonucuna
-    karışmasın diye her başarısız denemeden sonra çağrılır.
+    Called after every failed attempt so half-finished .part/.ytdl files
+    don't bleed into the next attempt's result.
     """
     try:
         for item in Path(download_dir).iterdir():
@@ -1070,10 +1075,10 @@ def _clear_partial_files(download_dir: Path) -> None:
 
 def _is_photo_only_error(error: Exception) -> bool:
     """
-    Hata "gönderide video yok" mu diyor?
+    Does the error say "no video in this post"?
 
-    Bu bir erişim/oturum sorunu değil, içeriğin cinsi: gönderi fotoğraf ya da
-    karusel. Cookie veya format profili değiştirerek çözülmez.
+    This isn't an access/session problem, it's the content type: the post is
+    a photo or carousel. Changing cookies or the format profile won't fix it.
     """
     msg = str(error).lower()
     return (
@@ -1097,12 +1102,12 @@ def _should_retry_without_cookies(error: Exception) -> bool:
     return any(marker in msg for marker in markers)
 
 
-# ── Mode yardımcıları ────────────────────────────────────────────────────────
-# Desteklenen indirme modları:
+# ── Mode helpers ─────────────────────────────────────────────────────────────
+# Supported download modes:
 #   video_best / video_1080 / video_720 / video_480 / video_360
 #   audio_best / audio_mp3 / audio_320 / audio_192 / audio_128 / audio_flac
 #   thumbnail
-#   auto / media_auto  (sosyal platform / direkt)
+#   auto / media_auto  (social platform / direct)
 
 _AUDIO_QUALITY = {
     "audio_best": "320",
@@ -1110,17 +1115,17 @@ _AUDIO_QUALITY = {
     "audio_320": "320",
     "audio_192": "192",
     "audio_128": "128",
-    "audio_flac": "0",  # kayıpsız — bit hızı parametresi yok
-    "audio": "320",  # geriye dönük uyumluluk
+    "audio_flac": "0",  # lossless — no bitrate parameter
+    "audio": "320",  # backward compatibility
 }
 
-# Hangi mod hangi codec'e dönüştürülür. Varsayılan mp3.
+# Which mode converts to which codec. Default is mp3.
 #
-# FLAC hakkında not: kayıpsızdır ama kaynak zaten kayıplıysa (YouTube opus,
-# Instagram/TikTok aac) FLAC'a çevirmek KAYBEDİLEN BİLGİYİ GERİ GETİRMEZ —
-# yalnızca dosyayı 5-10 kat büyütür. Bu yüzden FLAC varsayılan DEĞİL, ayrı
-# bir seçenek: kaynağın kendisi kayıpsız olduğunda (ör. Bandcamp) veya
-# arşivlemek istendiğinde anlamlı.
+# On FLAC: it's lossless, but if the source is already lossy (YouTube opus,
+# Instagram/TikTok aac), converting to FLAC does NOT recover the lost
+# information — it only makes the file 5-10x bigger. So FLAC is NOT the
+# default, it's a separate option: useful when the source itself is lossless
+# (e.g. Bandcamp) or for archiving.
 _AUDIO_CODEC = {
     "audio_flac": "flac",
 }
@@ -1147,13 +1152,14 @@ def _is_thumbnail_mode(mode: str) -> bool:
 
 def _reject_live_filter(info: dict, *, incomplete: bool = False) -> str | None:
     """
-    yt-dlp match_filter: canlı yayınları indirme sırasında da eler.
+    yt-dlp match_filter: also filters out livestreams during the download
+    itself.
 
-    probe aşamasını atlatan bir yayın (ör. sorgu sırasında yayına başlayan
-    içerik) buraya takılır; yt-dlp indirmeyi hiç başlatmaz.
+    Catches a stream that slipped past the probe (e.g. it went live between
+    the query and the download); yt-dlp never starts the download here.
     """
     if info_is_live(info):
-        return "canlı yayın — indirme atlandı"
+        return "livestream — download skipped"
     return None
 
 
@@ -1227,11 +1233,11 @@ def _build_opts(
         "http_chunk_size": 1024 * 1024 * 10,
         "http_headers": HTTP_HEADERS.copy(),
         "progress_hooks": [_make_hook(job_id, queue)],
-        # ── Canlı yayın / sonsuz akış koruması ──
-        # match_filter: canlı içerik indirmeye hiç girmez.
-        # max_filesize: sınırsız büyüyen bir dosya diski doldurmadan durur.
-        # wait_for_video: yayına başlamamış içerik için BEKLEME (sonsuz bekleme
-        # tam olarak kilitlenmenin bir başka biçimiydi).
+        # ── Livestream / endless-stream protection ──
+        # match_filter: live content never enters the download.
+        # max_filesize: an unbounded stream stops before filling the disk.
+        # wait_for_video: never WAIT for content that hasn't gone live yet
+        # (an infinite wait was just another shape of the same lockup).
         "match_filter": _reject_live_filter,
         "max_filesize": MAX_DOWNLOAD_BYTES,
         "wait_for_video": None,
@@ -1244,23 +1250,24 @@ def _build_opts(
     if shutil.which("ffmpeg"):
         opts["ffmpeg_location"] = shutil.which("ffmpeg")
 
-    # ── Thumbnail (kapak) modu ────────────────────────────────────────────────
+    # ── Thumbnail mode ──────────────────────────────────────────────────────
     if _is_thumbnail_mode(mode):
         opts["skip_download"] = True
         opts["writethumbnail"] = True
         opts["write_all_thumbnails"] = False
         return opts
 
-    # ── Ses modları ───────────────────────────────────────────────────────────
+    # ── Audio modes ───────────────────────────────────────────────────────────
     if _is_audio_mode(mode):
         if not shutil.which("ffmpeg"):
-            raise RuntimeError("ffmpeg bulunamadı. Ses indirmek için ffmpeg gerekli.")
+            raise RuntimeError("ffmpeg not found. It's required for audio downloads.")
 
         quality = _AUDIO_QUALITY.get(mode, "320")
         codec = _AUDIO_CODEC.get(mode, "mp3")
 
-        # FLAC'ta kaynağın en iyi ses akışını almak ayrıca önemli: kayıpsız
-        # kaba düşük bit hızlı bir akış koymak dosyayı büyütür, kaliteyi değil.
+        # For FLAC, getting the source's best audio stream matters too: a
+        # lossless container around a low-bitrate stream only inflates the
+        # file, not the quality.
         opts["format"] = "bestaudio/best"
         if codec == "flac":
             opts["format_sort"] = ["abr", "asr"]
@@ -1269,32 +1276,32 @@ def _build_opts(
             "key": "FFmpegExtractAudio",
             "preferredcodec": codec,
         }
-        # preferredquality FLAC'ta anlamsız; verilirse ffmpeg'e geçersiz
-        # bit hızı argümanı gidiyor.
+        # preferredquality is meaningless for FLAC; passing it sends ffmpeg
+        # an invalid bitrate argument.
         if codec != "flac":
             extract["preferredquality"] = quality
 
         opts["postprocessors"] = [
             extract,
-            # Temel etiketleri ffmpeg yazsın (başlık/sanatçı/albüm).
-            # Bu adım OLMADAN dosyada yalnızca kodlayıcı etiketi kalıyordu.
+            # Let ffmpeg write the basic tags (title/artist/album). Without
+            # this step the file only had an encoder tag.
             {
                 "key": "FFmpegMetadata",
                 "add_metadata": True,
             },
         ]
 
-        # Küçük resim diske yazılır ama EmbedThumbnail KULLANILMAZ:
-        # o, 16:9 video küçük resmini olduğu gibi gömüyor ve kapak siyah
-        # bantlı çıkıyordu. Kapağı kareye kırpıp gömme işini
-        # bot/downloader/metadata.py yapıyor (indirmeden sonra).
+        # The thumbnail is written to disk but EmbedThumbnail is NOT used: it
+        # embeds the 16:9 video thumbnail as-is and the cover came out with
+        # black bars. Cropping it to a square and embedding it happens in
+        # bot/downloader/metadata.py after the download.
         opts["writethumbnail"] = True
         return opts
 
     if format_profile == "loose":
         return opts
 
-    # ── Video modları (yükseklik sınırı) ──────────────────────────────────────
+    # ── Video modes (height cap) ──────────────────────────────────────────────
     height = _VIDEO_HEIGHT.get(mode)
     if height:
         opts["format"] = (
@@ -1302,45 +1309,44 @@ def _build_opts(
             f"best[height<={height}]/best"
         )
     elif _is_instagram_url(url):
-        # Instagram'ın DASH akışları YALNIZCA vp09 sunuyor; ama numaralı
-        # (progressive) mp4 formatları h264+aac. Bu yüzden Instagram'da önce
-        # progressive denenir — hiçbir alanı (vcodec/ext/height) dolu olmadığı
-        # için codec süzgeciyle hedeflenemiyor, tek ayırt edici işaret
-        # format_id'de "dash" geçmemesi.
+        # Instagram's DASH streams are vp09 ONLY, but the numbered
+        # (progressive) mp4 formats are h264+aac. So progressive is tried
+        # first on Instagram — none of its fields (vcodec/ext/height) are
+        # populated, so the only marker is "dash" being absent from
+        # format_id.
         #
-        # Bu dal KASITLI olarak yalnızca Instagram'a özel: genele konulduğunda
-        # YouTube'da format 18'e (640x360) düşüyordu.
+        # This branch is DELIBERATELY Instagram-only: applied generally it
+        # made YouTube fall back to format 18 (640x360).
         opts["format"] = "b[ext=mp4][format_id!*=dash]/bv*+ba/b/best"
     elif _is_social_url(url):
         opts["format"] = "bv*+ba/b/best"
     else:
-        # video_best ve diğer genel durumlar
+        # video_best and the general case
         opts["format"] = "bv*+ba/best/b"
 
-    # ── Codec tercihi (macOS/iOS uyumluluğu) ──────────────────────────────────
-    # Bu düzeltme olmadan yt-dlp'nin öntanımlı sıralaması av01 > vp9 > h264
-    # diyordu; .mp4 kabında av1+opus dosyalar üretiliyor ve macOS
-    # QuickTime/Safari ile iOS "codec desteklenmiyor" deyip oynatmıyordu.
+    # ── Codec preference (macOS/iOS compatibility) ────────────────────────────
+    # Without this, yt-dlp's default order is av01 > vp9 > h264, producing
+    # av1+opus files in an .mp4 container that macOS QuickTime/Safari and iOS
+    # refuse to play ("unsupported codec").
     #
-    # Sıra önemli:
-    #   res:1080 — 1080p'yi AŞMAYAN en iyi çözünürlük. Üst sınır şart, çünkü
-    #     YouTube'da h264 yalnızca 1080p'ye kadar var; sınırsız "res" dendiğinde
-    #     2160p vp9 kazanıyor ve dosya hem oynatılamıyor hem de aşağıdaki
-    #     ffmpeg katmanına 4K transcode yaptırıyordu.
-    #   vcodec/acodec — aynı çözünürlükte h264+aac varsa o seçilir.
+    # Order matters:
+    #   res:1080 — the best resolution NOT ABOVE 1080p. The cap is required
+    #     because YouTube only has h264 up to 1080p; an unbounded "res" picks
+    #     2160p vp9, which is both unplayable and forces a 4K transcode below.
+    #   vcodec/acodec — h264+aac wins at the same resolution when available.
     opts["format_sort"] = ["res:1080", "vcodec:h264", "acodec:aac", "ext:mp4:m4a"]
 
     opts["merge_output_format"] = "mp4"
 
-    # ── Altyazı ───────────────────────────────────────────────────────────────
-    # subtitle_lang verilirse altyazı indirilir ve videoya GÖMÜLÜR (ayrı .srt
-    # dosyası Telegram'da ikinci bir dosya olarak gitmesin diye). "auto" ise
-    # otomatik üretilen altyazılar da kabul edilir.
+    # ── Subtitles ───────────────────────────────────────────────────────────
+    # When subtitle_lang is set, subtitles are downloaded and BURNED into the
+    # video (so a separate .srt doesn't arrive as a second file). "auto"
+    # accepts auto-generated subtitles too.
     if subtitle_lang:
         langs = [x.strip() for x in subtitle_lang.split(",") if x.strip()]
         opts["writesubtitles"] = True
         opts["writeautomaticsub"] = True
-        opts["subtitleslangs"] = langs or ["tr"]
+        opts["subtitleslangs"] = langs or ["en"]
         opts["subtitlesformat"] = "srt/best"
         opts.setdefault("postprocessors", []).append({
             "key": "FFmpegEmbedSubtitle",
@@ -1380,22 +1386,22 @@ def _try_ytdlp_once(
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
         if isinstance(info, dict):
-            # Sorgu ile indirme arasında yayına geçen içerik burada yakalanır.
+            # Catches content that went live between the query and the download.
             if info_is_live(info):
-                raise LiveStreamError("Canlı yayınlar indirilemez.")
+                raise LiveStreamError("Livestreams cannot be downloaded.")
             title = str(info.get("title") or "")
             compact_info = _compact_info(info, url)
 
     files = collect_files(download_dir, mode=mode)
     if not files:
-        raise RuntimeError("İndirilen dosya bulunamadı.")
+        raise RuntimeError("No downloaded file found.")
 
     if not _is_audio_mode(mode) and not _is_thumbnail_mode(mode):
         files = _ensure_playable(files, job_id=job_id, queue=queue)
 
-    # ── Ses metadata'sı + kare kapak ──────────────────────────────────────────
-    # ffmpeg'in yazdığı temel etiketlerin üzerine, kaynaktaki tam bilgiyi
-    # (artists[], album_artist, yayın yılı, parça no) mutagen ile yazıyoruz.
+    # ── Audio metadata + square cover ─────────────────────────────────────────
+    # On top of the basic tags ffmpeg wrote, mutagen writes the full source
+    # info (artists[], album_artist, release year, track number).
     if _is_audio_mode(mode) and isinstance(info, dict):
         for audio_file in files:
             if Path(audio_file).suffix.lower() in AUDIO_EXTS:
@@ -1403,7 +1409,7 @@ def _try_ytdlp_once(
                 if written:
                     queue.put(log_event(
                         job_id, "info",
-                        "Metadata yazıldı: " + ", ".join(sorted(written)),
+                        "Metadata written: " + ", ".join(sorted(written)),
                     ))
 
     return files, title, compact_info
@@ -1423,37 +1429,38 @@ def download_with_ytdlp(
 ) -> tuple[list[str], str, dict[str, Any]]:
     _log_cookie_status(job_id, url, cookies_file, queue)
 
-    # ── Canlı yayın ön kontrolü ───────────────────────────────────────────────
-    # İndirmeden ÖNCE sorulur. Canlı yayın sonsuz akar; yt-dlp bunu bir ffmpeg
-    # alt sürecine devreder ve indirme asla bitmez. Burada durdurulmazsa iş
-    # slotu süresiz dolu kalır ve disk sürekli büyür.
-    # Spotify kendi dalında ele alınır (yt-dlp Spotify'ı çözemez).
-    # skip_live_check: pipeline bu kontrolü zaten yaptıysa tekrarlanmaz.
+    # ── Livestream pre-check ──────────────────────────────────────────────────
+    # Asked BEFORE the download. A livestream never ends; yt-dlp hands it off
+    # to an ffmpeg subprocess and the download would never finish. Without
+    # this the job slot would stay busy forever and the disk would keep
+    # growing.
+    # Spotify is handled in its own branch (yt-dlp can't resolve Spotify).
+    # skip_live_check: skipped when the pipeline already did this check.
     if not skip_live_check and not _is_spotify_url(url):
         is_live, _probe = probe_is_live(url, cookies_file=cookies_file)
         if is_live:
-            queue.put(log_event(job_id, "warning", f"Canlı yayın reddedildi: {url}"))
-            raise LiveStreamError("Canlı yayınlar indirilemez.")
+            queue.put(log_event(job_id, "warning", f"Livestream rejected: {url}"))
+            raise LiveStreamError("Livestreams cannot be downloaded.")
 
     errors: list[str] = []
 
-    # ── Spotify: yt-dlp indiremez (DRM). Metadata oku -> YouTube'dan ses indir ──
+    # ── Spotify: yt-dlp can't download it (DRM). Read metadata -> download audio from YouTube ──
     if _is_spotify_url(url):
         track = _spotify_track_info(url, queue, job_id)
         query = track["query"]
         search_url = "ytsearch1:" + query
-        # Spotify her zaman ses olarak indirilir.
+        # Spotify always downloads as audio.
         spotify_mode = mode if _is_audio_mode(mode) else "audio_best"
 
-        # Arama YouTube'a gider. Sıra kasıtlı olarak ÖNCE cookie'siz:
-        #   • cookie'siz  -> android istemcisi, DASH ses (bu şarkıda 3.2 MB)
-        #   • cookie'li   -> tv istemcisi, yalnızca HLS (aynı şarkı 37 MB)
-        # Yani cookie'li deneme hem daha yavaş hem ~10x daha fazla trafik.
-        # Ama cookie'siz deneme YouTube "Sign in to confirm you're not a bot"
-        # dediğinde (VDS IP'sinde sık) başarısız oluyor; önceden TEK yol
-        # oydu ve o anda Spotify tamamen kullanılamaz hale geliyordu.
-        # Bu yüzden cookie'li deneme ucuz yol tıkandığında devreye giren
-        # yedek olarak duruyor.
+        # The search goes to YouTube. The order is deliberately cookieless FIRST:
+        #   • cookieless -> android client, DASH audio (3.2 MB for this track)
+        #   • cookies    -> tv client, HLS only (the same track at 37 MB)
+        # So the cookie-based attempt is both slower and ~10x more traffic.
+        # But the cookieless attempt fails when YouTube says "Sign in to
+        # confirm you're not a bot" (common from this VDS's IP); that used to
+        # be the ONLY path, and Spotify became entirely unusable when it hit
+        # that wall. The cookie-based attempt is the fallback for when the
+        # cheap path is blocked.
         spotify_errors: list[str] = []
         for label, use_cookies in (("cookieless", False), ("cookies", True)):
             try:
@@ -1467,10 +1474,10 @@ def download_with_ytdlp(
                     use_cookies=use_cookies,
                     format_profile="normal",
                 )
-                # Etiketleri YouTube'unkiyle değil Spotify künyesiyle yaz.
+                # Tag with Spotify's credits, not YouTube's.
                 _apply_spotify_metadata(files, track, queue=queue, job_id=job_id)
 
-                # Kaynak olarak orijinal Spotify linkini koru.
+                # Keep the original Spotify link as the source.
                 info["platform"] = "Spotify"
                 info["webpage_url"] = url
                 info["title"] = track.get("title") or title or query
@@ -1484,19 +1491,20 @@ def download_with_ytdlp(
                 spotify_errors.append(f"{label}: {message}")
                 queue.put(log_event(
                     job_id, "warning",
-                    f"Spotify -> YouTube denemesi başarısız [{label}]: {message}",
+                    f"Spotify -> YouTube attempt failed [{label}]: {message}",
                 ))
                 _clear_partial_files(download_dir)
 
         raise RuntimeError(
-            "Spotify şarkısı YouTube üzerinden indirilemedi — "
+            "Could not download the Spotify track through YouTube — "
             + " | ".join(spotify_errors)
         )
 
-    # ── TikTok slayt (fotoğraf) gönderisi ─────────────────────────────────────
-    # Kısa link (vt./vm.) fotoğraf mı video mu belli etmediği için önce çözülür.
-    # Ses modunda görselleri indirmenin anlamı yok: yt-dlp /video/ adresinden
-    # slaytın müziğini zaten verebiliyor, o yüzden normal akışa devredilir.
+    # ── TikTok photo (slideshow) post ─────────────────────────────────────────
+    # A short link (vt./vm.) doesn't say whether it's a photo or video post,
+    # so it's resolved first. In audio mode there's no point downloading the
+    # images: yt-dlp can already give the slideshow's music from /video/, so
+    # this falls through to the normal flow.
     if _is_tiktok_url(url):
         resolved = _resolve_tiktok_url(url)
         photo_id = _tiktok_photo_id(resolved)
@@ -1504,7 +1512,7 @@ def download_with_ytdlp(
             video_url = resolved.replace("/photo/", "/video/", 1)
             if _is_audio_mode(mode) or _is_thumbnail_mode(mode):
                 queue.put(log_event(
-                    job_id, "info", "TikTok slayt gönderisi — ses /video/ adresinden alınıyor.",
+                    job_id, "info", "TikTok slideshow post — fetching audio from /video/.",
                 ))
                 url = video_url
             else:
@@ -1541,11 +1549,11 @@ def download_with_ytdlp(
             ("cookieless", False, "normal"),
         ]
 
-    # ── Instagram: kilitli oturumda cookie'li denemeleri hiç yapma ────────────
-    # Hesap checkpoint'e düştüğünde cookie'li HER istek 400 dönüyor. Bunlar
-    # sadece boşa zaman değil; kilitli bir hesabı arka arkaya dürtmek de
-    # kötü. Reel'ler zaten cookie'siz yoldan iniyor, o yüzden cookie'li
-    # denemeleri elemek indirilebilir içeriği kaybettirmiyor.
+    # ── Instagram: skip cookie-based attempts entirely on a locked session ──
+    # On a checkpointed account, EVERY cookie-based request returns 400.
+    # These aren't just wasted time; repeatedly poking a locked account is
+    # bad too. Reels already come through the cookieless path, so dropping
+    # the cookie-based attempts doesn't lose any downloadable content.
     if _is_instagram_url(url):
         ig_state = _instagram_session_state(cookies_file)
         if ig_state == "checkpoint":
@@ -1553,17 +1561,18 @@ def download_with_ytdlp(
             queue.put(log_event(job_id, "error", IG_CHECKPOINT_MESSAGE))
             errors.append("instagram: checkpoint_required — " + IG_CHECKPOINT_MESSAGE)
 
-            # Panele bildir. Bu, indirme sonradan cookie'siz yoldan BAŞARILI
-            # olsa bile yapılır: reel'ler cookie'siz iniyor ama /p/ gönderileri
-            # ve story'ler inmiyor, yani kilit her hâlükârda admin'in görmesi
-            # gereken bir arıza. Yalnızca hata anında raporlansaydı, kilit
-            # görünmez kalıp bütün bir gönderi türü sessizce kaybolacaktı.
+            # Report to the panel. Done even if the download later succeeds
+            # through the cookieless path: reels download fine but /p/ posts
+            # and stories don't, so the lock is a malfunction the admin
+            # should see regardless. Reporting only on outright failure would
+            # let the lock go unnoticed while a whole content type silently
+            # disappeared.
             if time.time() - _IG_CHECKPOINT_REPORTED > _IG_SESSION_TTL:
                 _IG_CHECKPOINT_REPORTED = time.time()
                 queue.put(cookie_event(
                     job_id=job_id,
                     platform="Instagram",
-                    reason="hesap kilitli — doğrulama gerekiyor (cookie yenilemek yetmez)",
+                    reason="account locked — verification required (refreshing cookies is not enough)",
                     url=url,
                     error="checkpoint_required — " + IG_CHECKPOINT_MESSAGE,
                 ))
@@ -1574,7 +1583,7 @@ def download_with_ytdlp(
 
     for label, use_cookies, format_profile in attempts:
         try:
-            queue.put(log_event(job_id, "info", f"yt-dlp denemesi: {label}"))
+            queue.put(log_event(job_id, "info", f"yt-dlp attempt: {label}"))
             return _try_ytdlp_once(
                 job_id=job_id,
                 url=url,
@@ -1588,25 +1597,25 @@ def download_with_ytdlp(
             )
 
         except LiveStreamError:
-            # Canlı yayın: yeniden denemenin anlamı yok, hemen çık.
-            queue.put(log_event(job_id, "warning", f"Canlı yayın reddedildi [{label}]: {url}"))
+            # Livestream: no point retrying, exit right away.
+            queue.put(log_event(job_id, "warning", f"Livestream rejected [{label}]: {url}"))
             raise
 
         except Exception as exc:
             message = short_error(exc)
             errors.append(f"{label}: {message}")
-            queue.put(log_event(job_id, "warning", f"yt-dlp başarısız [{label}]: {message}"))
+            queue.put(log_event(job_id, "warning", f"yt-dlp failed [{label}]: {message}"))
 
-            # "Bu gönderide video yok" bir erişim sorunu DEĞİL, içeriğin
-            # cinsi: gönderi fotoğraf/karusel. Cookie'yi ya da format
-            # profilini değiştirmek sonucu değiştirmiyor — Instagram fotoğraf
-            # gönderilerinde bu yüzden 4 anlamsız deneme yapılıp her seferinde
-            # Instagram dürtülüyordu. Doğrudan gallery-dl'e geçilir; görselleri
-            # indirebilen tek kaynak o.
+            # "No video in this post" is not an access issue, it's the
+            # content type: a photo/carousel post. Neither cookies nor the
+            # format profile change the outcome — this used to run 4
+            # pointless attempts against Instagram photo posts, poking it
+            # every time. Go straight to gallery-dl, the only source that
+            # can fetch images.
             if _is_photo_only_error(exc):
                 queue.put(log_event(
                     job_id, "info",
-                    "Gönderide video yok (fotoğraf/karusel) — görseller için gallery-dl'e geçiliyor.",
+                    "No video in this post (photo/carousel) — switching to gallery-dl for images.",
                 ))
                 break
 
@@ -1630,4 +1639,4 @@ def download_with_ytdlp(
         except Exception as exc:
             errors.append(f"gallery-dl: {short_error(exc)}")
 
-    raise RuntimeError("İndirme başarısız. Denemeler: " + " | ".join(errors[-5:]))
+    raise RuntimeError("Download failed. Attempts: " + " | ".join(errors[-5:]))

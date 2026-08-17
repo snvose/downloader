@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Event payloads sent from the worker process to the main process."""
+
 from typing import Any
 
 
@@ -50,8 +52,8 @@ def error_event(
     kind: str = "generic",
 ) -> dict[str, Any]:
     # kind: "generic" | "live" | "timeout" | "oversize"
-    # Canlı yayın / zaman aşımı gibi durumlar admine hata bildirimi
-    # göndermez; bunlar beklenen reddetmelerdir, arıza değil.
+    # Expected rejections (livestreams, timeouts) do not trigger an admin
+    # failure notification.
     return {
         "type": "error",
         "job_id": job_id,
@@ -75,12 +77,7 @@ def cookie_event(
     url: str = "",
     error: str = "",
 ) -> dict[str, Any]:
-    """
-    Cookie kaynaklı indirme hatası.
-
-    Worker ayrı bir süreçte çalıştığı için dosyaya doğrudan yazmak yerine
-    olayı ana sürece iletiyoruz; kayıt orada tek elden yapılır.
-    """
+    """Cookie related download failure, recorded by the main process."""
     return {
         "type": "cookie_error",
         "job_id": job_id,

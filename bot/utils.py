@@ -12,21 +12,16 @@ SUPPORTED_DOMAINS = {
     "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be",
     "instagram.com", "www.instagram.com",
     "tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com",
-
-    # Facebook algılanır ama indirme akışı askıda.
     "facebook.com", "www.facebook.com", "m.facebook.com", "mbasic.facebook.com",
     "fb.watch", "fb.com", "www.fb.com",
-
     "x.com", "twitter.com", "www.twitter.com",
     "reddit.com", "www.reddit.com", "old.reddit.com", "redd.it",
     "pinterest.com", "www.pinterest.com", "pin.it",
 
-    # Spotify bilinçli olarak algılanır ama doğrudan medya indirme yapılmaz.
+    # Spotify is detected on purpose but has no direct media download; the
+    # worker looks the track up on YouTube instead.
     "open.spotify.com", "spotify.com", "www.spotify.com",
 
-    # ── Faz 2'de eklenen platformlar ──────────────────────────────────────────
-    # Hepsi yt-dlp ile doğrulandı; çoğu cobalt tarafından da destekleniyor
-    # (bkz. bot/downloader/cobalt.py SUPPORTED_SERVICES).
     "soundcloud.com", "www.soundcloud.com", "m.soundcloud.com", "on.soundcloud.com",
     "vimeo.com", "www.vimeo.com", "player.vimeo.com",
     "dailymotion.com", "www.dailymotion.com", "dai.ly",
@@ -85,6 +80,7 @@ def is_supported_url(url: str) -> bool:
 def platform_name(url: str) -> str:
     host = get_host(url)
 
+    # Order matters: more specific matches come first.
     if "music.youtube" in host:
         return "YouTube Music"
     if "youtube" in host or "youtu.be" in host:
@@ -103,9 +99,6 @@ def platform_name(url: str) -> str:
         return "Pinterest"
     if "spotify" in host:
         return "Spotify"
-
-    # ── Faz 2 platformları ────────────────────────────────────────────────────
-    # Sıra önemli: daha spesifik eşleşmeler önce gelir.
     if "soundcloud" in host:
         return "SoundCloud"
     if "vimeo" in host:
@@ -145,7 +138,7 @@ def platform_name(url: str) -> str:
     if "kick.com" in host:
         return "Kick"
 
-    return "Medya"
+    return "Media"
 
 
 def is_spotify_url(url: str) -> bool:
@@ -154,10 +147,7 @@ def is_spotify_url(url: str) -> bool:
 
 def is_facebook_url(url: str) -> bool:
     host = get_host(url)
-    return (
-        "facebook" in host
-        or host in {"fb.watch", "fb.com", "www.fb.com"}
-    )
+    return "facebook" in host or host in {"fb.watch", "fb.com", "www.fb.com"}
 
 
 def human_bytes(num: float | int | None) -> str:
@@ -183,19 +173,18 @@ def file_kind(path: str | Path) -> str:
 
 
 def safe_public_error(raw: str) -> str:
-    # Teknik hata mesajını kullanıcı diline çevrilmiş, sade bir mesaja eşler.
-    from .i18n import t  # geç import (döngüsel bağımlılık önlemi)
+    """Maps a technical error message to a short, translated user message."""
+    from .i18n import t  # late import: avoids a circular dependency
 
     lowered = str(raw or "").lower()
 
-    # "Unsupported URL" önce bakılır. Toplu hata mesajında birden çok denemenin
-    # çıktısı yan yana duruyor; aşağıdaki tiktok+403 kuralı çok geniş olduğu
-    # için, asıl sebep "bu adres türü desteklenmiyor" olsa bile bir fallback'in
-    # 403'ünü yakalayıp kullanıcıya "erişim engeli" diyordu.
+    # "Unsupported URL" is checked first: a combined error message contains the
+    # output of several attempts, and the broader rules below would otherwise
+    # report a fallback's 403 as the real cause.
     if "unsupported url" in lowered:
         return t("err_unsupported")
-    # Hesap kilidi, "giriş gerekiyor"dan önce bakılır: ikisi de aynı mesajda
-    # geçebiliyor ama kullanıcıya söylenmesi gereken bu.
+    # Account lock is checked before "login required": both can appear in the
+    # same message but this is the one the user needs to hear.
     if "checkpoint_required" in lowered or "challenge_required" in lowered:
         return t("err_ig_checkpoint")
     if "tiktok" in lowered and ("403" in lowered or "forbidden" in lowered):
@@ -210,4 +199,3 @@ def safe_public_error(raw: str) -> str:
         return t("cancelled")
 
     return t("err_generic")
-

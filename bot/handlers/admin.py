@@ -46,7 +46,7 @@ async def dur_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     permissions.set_bot_enabled(False)
     manager.shutdown()
 
-    await safe_reply(update.message, "Bot durduruldu. Aktif işler iptal edildi.")
+    await safe_reply(update.message, "Bot stopped. Active jobs were cancelled.")
 
 
 async def basla_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -56,7 +56,7 @@ async def basla_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     permissions = context.application.bot_data["permissions"]
     permissions.set_bot_enabled(True)
 
-    await safe_reply(update.message, "Bot başlatıldı.")
+    await safe_reply(update.message, "Bot started.")
 
 
 async def banid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -66,8 +66,8 @@ async def banid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not context.args:
         await safe_reply(
             update.message,
-            "Kullanım: <code>/banid ID</code>\n\n"
-            "Pozitif ID → kullanıcı, negatif ID → grup/kanal.",
+            "Usage: <code>/banid ID</code>\n\n"
+            "Positive ID → user, negative ID → group/channel.",
             parse_mode="HTML",
         )
         return
@@ -75,22 +75,21 @@ async def banid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         target_id = int(context.args[0])
     except ValueError:
-        await safe_reply(update.message, "ID sayısal olmalı.")
+        await safe_reply(update.message, "ID must be numeric.")
         return
 
     permissions = context.application.bot_data["permissions"]
     manager = context.application.bot_data["process_manager"]
 
-    # ID'nin işaretine göre doğru listeye yazılır. Önceden her ID "users"
-    # listesine gidiyordu; grup ID'si oraya yazılınca hiçbir kontrolle
-    # eşleşmiyor ve grup banı hiç işlemiyordu.
+    # The id's sign decides the right list. Every id used to go to "users",
+    # so a group id landed there and group bans never matched anything.
     if permissions.ban_id(target_id):
         cancelled = manager.cancel_chat_jobs(target_id)
-        note = f" ({cancelled} aktif indirme iptal edildi)" if cancelled else ""
-        await safe_reply(update.message, f"Grup banlandı: {target_id}{note}")
+        note = f" ({cancelled} active downloads cancelled)" if cancelled else ""
+        await safe_reply(update.message, f"Group banned: {target_id}{note}")
     else:
         manager.cancel_user_job(target_id)
-        await safe_reply(update.message, f"Kullanıcı banlandı: {target_id}")
+        await safe_reply(update.message, f"User banned: {target_id}")
 
 
 async def unbanid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -100,8 +99,8 @@ async def unbanid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not context.args:
         await safe_reply(
             update.message,
-            "Kullanım: <code>/unbanid ID</code>\n\n"
-            "Pozitif ID → kullanıcı, negatif ID → grup/kanal.",
+            "Usage: <code>/unbanid ID</code>\n\n"
+            "Positive ID → user, negative ID → group/channel.",
             parse_mode="HTML",
         )
         return
@@ -109,13 +108,13 @@ async def unbanid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     try:
         target_id = int(context.args[0])
     except ValueError:
-        await safe_reply(update.message, "ID sayısal olmalı.")
+        await safe_reply(update.message, "ID must be numeric.")
         return
 
     permissions = context.application.bot_data["permissions"]
-    kind = "Grup" if permissions.unban_id(target_id) else "Kullanıcı"
+    kind = "Group" if permissions.unban_id(target_id) else "User"
 
-    await safe_reply(update.message, f"{kind} banı kaldırıldı: {target_id}")
+    await safe_reply(update.message, f"{kind} unbanned: {target_id}")
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -133,27 +132,27 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     counts = permissions.counts()
 
-    ffmpeg = "var" if shutil.which("ffmpeg") else "yok"
-    gallery_dl = "var" if shutil.which("gallery-dl") else "yok"
+    ffmpeg = "yes" if shutil.which("ffmpeg") else "no"
+    gallery_dl = "yes" if shutil.which("gallery-dl") else "no"
 
     text = (
         f"<b>{config.bot_name} — Status</b>\n\n"
-        f"Bot durumu: <b>{'aktif' if counts['enabled'] else 'durduruldu'}</b>\n"
-        f"Local Bot API: <b>{'aktif' if config.local_bot_api_base else 'kapalı'}</b>\n"
-        f"Aktif indirme: <b>{len(active_jobs)}</b>\n"
-        f"Toplam job kaydı: <b>{len(manager.jobs)}</b>\n"
-        f"Max eş zamanlı: <b>{config.max_simultaneous_downloads}</b>\n"
-        f"Max dosya: <b>{config.max_file_size_mb} MB</b>\n\n"
-        f"Banlı kullanıcı: <b>{counts['banned_users']}</b>\n"
-        f"Banlı grup: <b>{counts['banned_groups']}</b>\n\n"
+        f"Bot state: <b>{'running' if counts['enabled'] else 'stopped'}</b>\n"
+        f"Local Bot API: <b>{'on' if config.local_bot_api_base else 'off'}</b>\n"
+        f"Active downloads: <b>{len(active_jobs)}</b>\n"
+        f"Total job records: <b>{len(manager.jobs)}</b>\n"
+        f"Max concurrent: <b>{config.max_simultaneous_downloads}</b>\n"
+        f"Max file size: <b>{config.max_file_size_mb} MB</b>\n\n"
+        f"Banned users: <b>{counts['banned_users']}</b>\n"
+        f"Banned groups: <b>{counts['banned_groups']}</b>\n\n"
         f"Python: <code>{sys.version.split()[0]}</code>\n"
         f"yt-dlp: <code>{yt_dlp.version.__version__}</code>\n"
         f"ffmpeg: <b>{ffmpeg}</b>\n"
         f"gallery-dl: <b>{gallery_dl}</b>\n\n"
-        f"Download dizini:\n<code>{config.download_dir}</code>"
+        f"Download directory:\n<code>{config.download_dir}</code>"
     )
 
-    await safe_reply(update.message, 
+    await safe_reply(update.message,
         text,
         parse_mode="HTML",
         disable_web_page_preview=True,
@@ -165,58 +164,56 @@ async def refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     manager = context.application.bot_data["process_manager"]
     manager.shutdown()
-    # Menü mesajlarını da sil: aksi halde ekranda tıklanabilir ama karşılığı
-    # olmayan öksüz format menüleri kalıyordu.
+    # Also delete pending menu messages — otherwise they stayed on screen,
+    # clickable, with no job behind them anymore.
     cleared = await clear_all_pending(context.application)
     context.application.bot_data["playlist_sessions"] = {}
-    await safe_reply(update.message, f"Tüm işler temizlendi. ({cleared} menü kaldırıldı)")
+    await safe_reply(update.message, f"All jobs cleared. ({cleared} menus removed)")
 
 
-# ── /admin paneli ────────────────────────────────────────────────────────────
+# ── /admin panel ─────────────────────────────────────────────────────────────
 
 _MODE_LABEL = {
     MODE_NORMAL: "🟢 Normal",
-    MODE_SAFE: "🔇 Safe Mode (sessiz)",
-    MODE_MAINTENANCE: "🛠 Bakım Modu",
+    MODE_SAFE: "🔇 Safe mode (silent)",
+    MODE_MAINTENANCE: "🛠 Maintenance mode",
 }
 
-# Mod satırı butonları için kısa etiketler
 _MODE_SHORT = {
     MODE_NORMAL: "🟢 Normal",
     MODE_SAFE: "🔇 Safe",
-    MODE_MAINTENANCE: "🛠 Bakım",
+    MODE_MAINTENANCE: "🛠 Maint.",
 }
 
 
-# Telegram'ın mesaj metni sınırı. Aşan mesaj hiç gönderilmiyor.
+# Telegram's message length limit. A longer message is not sent at all.
 _TELEGRAM_TEXT_LIMIT = 4096
 
-# HTML parse_mode'da Telegram'ın tanıdığı, kapatılması gereken etiketler.
+# HTML tags Telegram recognizes in parse_mode="HTML" and that must be closed.
 _HTML_TAGS = ("b", "i", "u", "s", "code", "pre", "a", "blockquote")
 
 
 def _fit(text: str) -> str:
     """
-    Panel metnini Telegram sınırına sığdırır.
+    Fits panel text into Telegram's limit.
 
-    Log görünümü 15 satırı 220 karakterle kırpıyordu ama HTML kaçışı
-    (& -> &amp;) ve <code> etiketleri metni şişirebiliyor; uzun traceback
-    satırları olan bir işten sonra toplam 4096'yı aşıyor ve panel HİÇ
-    güncellenmiyordu ("Message_too_long"). Kırpma satır sınırında yapılır,
-    yarım kalan etiket atılır, açık kalan etiketler kapatılır — aksi halde
-    Telegram bu kez "can't parse entities" diyecekti.
+    The log view used to cap 15 lines at 220 chars each, but HTML escaping
+    (& -> &amp;) and <code> tags can inflate the text past 4096 after a job
+    with a long traceback, so the panel simply never updated
+    ("Message_too_long"). The cut happens at a line boundary, a half-open tag
+    is dropped, and any tags left open are closed — otherwise Telegram would
+    reject it with "can't parse entities" instead.
     """
     if len(text) <= _TELEGRAM_TEXT_LIMIT:
         return text
 
-    notice = "\n\n<i>… mesaj çok uzun, kırpıldı.</i>"
+    notice = "\n\n<i>… message truncated.</i>"
     cut = text[: _TELEGRAM_TEXT_LIMIT - len(notice)]
 
     line_break = cut.rfind("\n")
     if line_break > len(cut) // 2:
         cut = cut[:line_break]
 
-    # Yarım kalan etiket ("<cod") geride bırakılamaz.
     if cut.rfind("<") > cut.rfind(">"):
         cut = cut[: cut.rfind("<")]
 
@@ -229,12 +226,12 @@ def _fit(text: str) -> str:
 
 async def _edit(query, text: str, markup: InlineKeyboardMarkup) -> None:
     """
-    Panel mesajını günceller.
+    Updates the panel message.
 
-    Önceden tüm istisnalar sessizce yutuluyordu: panel güncellenmezse admin
-    hiçbir geri bildirim almıyor, butona bastığında hiçbir şey olmuyordu.
-    Artık "değişiklik yok" hatası (zararsız) ayrılıyor, gerçek hatalar
-    loglanıyor ve kullanıcıya uyarı gösteriliyor.
+    Every exception used to be swallowed silently: if the update failed the
+    admin got no feedback at all when tapping a button. Now "no change"
+    (harmless) is separated out, real errors are logged and the admin is
+    warned.
     """
     text = _fit(text)
     try:
@@ -243,13 +240,12 @@ async def _edit(query, text: str, markup: InlineKeyboardMarkup) -> None:
         )
     except Exception as exc:
         message = str(exc).lower()
-        # Aynı içerik tekrar gönderilince Telegram hata döndürür; bu normal.
         if "not modified" in message:
             return
 
-        # HTML çözümlenemiyorsa (ör. log satırının içinden gelen bir metin
-        # etiket gibi göründüyse) panelin tamamen kaybolmasındansa biçimsiz
-        # ama okunur bir sürüm gitsin.
+        # If HTML can't be parsed (e.g. a log line happened to look like a
+        # tag), send an unformatted but readable version rather than losing
+        # the panel entirely.
         if "parse entities" in message or "parse_mode" in message:
             try:
                 plain = html.unescape(re.sub(r"<[^>]+>", "", text))
@@ -262,16 +258,16 @@ async def _edit(query, text: str, markup: InlineKeyboardMarkup) -> None:
             except Exception:
                 pass
 
-        logger.warning("Admin paneli güncellenemedi: %s", exc)
+        logger.warning("Admin panel update failed: %s", exc)
         try:
             await query.answer(
-                "Panel güncellenemedi, /admin ile yeniden aç.", show_alert=True
+                "Panel update failed, reopen with /admin.", show_alert=True
             )
         except Exception:
             pass
 
 
-# ── Ana panel ──
+# ── Main panel ──
 def _panel_keyboard(state) -> InlineKeyboardMarkup:
     mode = state.get_mode()
     enabled = state.get_enabled()
@@ -285,38 +281,38 @@ def _panel_keyboard(state) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         mode_row,
         [InlineKeyboardButton(
-            "⏸ Botu Durdur" if enabled else "▶️ Botu Başlat",
+            "⏸ Stop bot" if enabled else "▶️ Start bot",
             callback_data="admin|toggle",
         )],
         [
-            InlineKeyboardButton("🌐 Dil", callback_data="admin|langmenu"),
-            InlineKeyboardButton("📈 Analitik", callback_data="admin|analytics"),
-            InlineKeyboardButton("🖥 Sistem", callback_data="admin|status"),
+            InlineKeyboardButton("🌐 Language", callback_data="admin|langmenu"),
+            InlineKeyboardButton("📈 Analytics", callback_data="admin|analytics"),
+            InlineKeyboardButton("🖥 System", callback_data="admin|status"),
         ],
         [
-            InlineKeyboardButton("💬 Kullanım", callback_data="admin|usage|0"),
-            InlineKeyboardButton("🚫 Banlar", callback_data="admin|bans"),
-            InlineKeyboardButton("🍪 Cookie", callback_data="admin|cookie"),
+            InlineKeyboardButton("💬 Usage", callback_data="admin|usage|0"),
+            InlineKeyboardButton("🚫 Bans", callback_data="admin|bans"),
+            InlineKeyboardButton("🍪 Cookies", callback_data="admin|cookie"),
         ],
         [
-            InlineKeyboardButton("📣 Duyuru", callback_data="admin|broadcast"),
-            InlineKeyboardButton("📜 Log", callback_data="admin|logs|live|all"),
+            InlineKeyboardButton("📣 Broadcast", callback_data="admin|broadcast"),
+            InlineKeyboardButton("📜 Logs", callback_data="admin|logs|live|all"),
             InlineKeyboardButton("🎨 Emoji", callback_data="emoji|page|0"),
         ],
         [
-            InlineKeyboardButton("🧹 İşleri Temizle", callback_data="admin|clear"),
+            InlineKeyboardButton("🧹 Clear jobs", callback_data="admin|clear"),
         ],
         [
-            InlineKeyboardButton("🔄 Yenile", callback_data="admin|panel"),
-            InlineKeyboardButton("✖️ Kapat", callback_data="admin|close"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="admin|panel"),
+            InlineKeyboardButton("✖️ Close", callback_data="admin|close"),
         ],
     ])
 
 
 _MODE_HINT = {
-    MODE_NORMAL: "olağan çalışma",
-    MODE_SAFE: "sessiz — yalnızca medya, mesaj/buton yok",
-    MODE_MAINTENANCE: "indirme kapalı — sabit bilgi mesajı",
+    MODE_NORMAL: "regular operation",
+    MODE_SAFE: "silent — media only, no messages or buttons",
+    MODE_MAINTENANCE: "downloads off — a fixed notice is shown",
 }
 
 
@@ -324,9 +320,9 @@ def _panel_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     state = context.application.bot_data["bot_state"]
     manager = context.application.bot_data["process_manager"]
     config = context.application.bot_data["config"]
-    # Sayılar TEK kaynaktan (DB) okunur. Önceden panel chats.json'dan,
-    # istatistik ekranı usage_stats.json'dan, analitik DB'den okuyordu —
-    # aynı bilgi üç yerde farklı görünebiliyordu.
+    # Numbers come from a SINGLE source (the DB). They used to be read from
+    # chats.json in the panel, usage_stats.json in the stats screen and the
+    # DB in analytics — the same number could disagree in three places.
     db = context.application.bot_data.get("db")
     s = db.stats() if db else {"total_chats": 0, "groups": 0, "privates": 0, "total_downloads": 0}
     mode = state.get_mode()
@@ -336,21 +332,21 @@ def _panel_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     limit = config.max_simultaneous_downloads
     bar = "▰" * active + "▱" * max(0, limit - active)
     return (
-        f"<b>⚙️ {config.bot_name} · Admin Paneli</b>\n"
+        f"<b>⚙️ {config.bot_name} · Admin Panel</b>\n"
         "──────────────────\n"
-        f"{'🟢' if enabled else '⏸'} Durum: <b>{'Çalışıyor' if enabled else 'Durduruldu'}</b>\n"
-        f"{_MODE_LABEL.get(mode, mode).split(' ')[0]} Mod: <b>{_MODE_LABEL.get(mode, mode).split(' ', 1)[1]}</b>\n"
+        f"{'🟢' if enabled else '⏸'} State: <b>{'Running' if enabled else 'Stopped'}</b>\n"
+        f"{_MODE_LABEL.get(mode, mode).split(' ')[0]} Mode: <b>{_MODE_LABEL.get(mode, mode).split(' ', 1)[1]}</b>\n"
         f"      <i>{_MODE_HINT.get(mode, '')}</i>\n"
-        f"🌐 Dil: <b>{LANGUAGES.get(lang, lang)}</b>\n"
-        f"⚡ Aktif indirme: <b>{active}/{limit}</b>  <code>{bar}</code>\n"
+        f"🌐 Language: <b>{LANGUAGES.get(lang, lang)}</b>\n"
+        f"⚡ Active downloads: <b>{active}/{limit}</b>  <code>{bar}</code>\n"
         "──────────────────\n"
-        f"💬 Sohbet: <b>{s['total_chats']}</b> "
-        f"(grup <b>{s['groups']}</b> · özel <b>{s['privates']}</b>)\n"
-        f"📥 Toplam indirme: <b>{s['total_downloads']}</b>"
+        f"💬 Chats: <b>{s['total_chats']}</b> "
+        f"(groups <b>{s['groups']}</b> · private <b>{s['privates']}</b>)\n"
+        f"📥 Total downloads: <b>{s['total_downloads']}</b>"
     )
 
 
-# ── Dil menüsü ──
+# ── Language menu ──
 def _language_keyboard(current: str) -> InlineKeyboardMarkup:
     rows, row = [], []
     for code, name in LANGUAGES.items():
@@ -371,8 +367,8 @@ def _back_keyboard() -> InlineKeyboardMarkup:
 def _cookie_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📁 Hata Kaydı", callback_data="admin|cookielog"),
-            InlineKeyboardButton("🔄 Yenile", callback_data="admin|cookie"),
+            InlineKeyboardButton("📁 Error log", callback_data="admin|cookielog"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="admin|cookie"),
         ],
         [InlineKeyboardButton("‹ Panel", callback_data="admin|panel")],
     ])
@@ -381,13 +377,13 @@ def _cookie_keyboard() -> InlineKeyboardMarkup:
 def _cookie_log_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🧹 Sayaçları Sıfırla", callback_data="admin|cookiereset"),
-            InlineKeyboardButton("‹ Cookie", callback_data="admin|cookie"),
+            InlineKeyboardButton("🧹 Reset counters", callback_data="admin|cookiereset"),
+            InlineKeyboardButton("‹ Cookies", callback_data="admin|cookie"),
         ],
     ])
 
 
-# ── Cookie durumu ──
+# ── Cookie status ──
 _COOKIE_STATUS_ICON = {
     "expired": "🔴",
     "missing": "🔴",
@@ -397,21 +393,20 @@ _COOKIE_STATUS_ICON = {
 }
 
 _COOKIE_STATUS_LABEL = {
-    "expired": "SÜRESİ DOLMUŞ",
-    "missing": "EKSİK",
-    "expiring": "yakında bitiyor",
-    "optional_missing": "yok (gerekmiyor)",
-    "ok": "geçerli",
+    "expired": "EXPIRED",
+    "missing": "MISSING",
+    "expiring": "expiring soon",
+    "optional_missing": "none (not required)",
+    "ok": "valid",
 }
 
 
 def _cookie_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     """
-    Platform bazlı cookie durumu.
+    Cookie status per platform.
 
-    Admin'in tek bakışta "hangi cookie'yi yenilemeliyim" sorusunu
-    yanıtlaması için: durum + kalan gün + o cookie yüzünden başarısız
-    olan istek sayısı.
+    Answers "which cookie do I need to refresh?" at a glance: status,
+    remaining days, and the number of requests that failed because of it.
     """
     config = context.application.bot_data["config"]
     cookie_log = context.application.bot_data.get("cookie_log")
@@ -420,10 +415,10 @@ def _cookie_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     failures = cookie_log.failures() if cookie_log else {}
     rows = platform_cookie_status(cf, failures=failures)
 
-    lines = ["<b>🍪 Cookie Durumu</b>", ""]
+    lines = ["<b>🍪 Cookie Status</b>", ""]
 
     if not cf.exists():
-        lines.append(f"❌ Cookie dosyası yok:\n<code>{cf}</code>\n")
+        lines.append(f"❌ No cookie file:\n<code>{cf}</code>\n")
     else:
         try:
             size = cf.stat().st_size
@@ -431,7 +426,7 @@ def _cookie_text(context: ContextTypes.DEFAULT_TYPE) -> str:
             size = 0
         from bot.utils import human_bytes
         total = sum(r["count"] for r in rows)
-        lines.append(f"📄 <code>{cf.name}</code> · {human_bytes(size)} · {total} çerez")
+        lines.append(f"📄 <code>{cf.name}</code> · {human_bytes(size)} · {total} cookies")
         lines.append("")
 
     problems = [r for r in rows if r["status"] in {"expired", "missing", "expiring"}]
@@ -442,23 +437,23 @@ def _cookie_text(context: ContextTypes.DEFAULT_TYPE) -> str:
         parts = [f"{icon} <b>{row['platform']}</b> — {label}"]
 
         if row["count"]:
-            detail = f"{row['count']} çerez"
+            detail = f"{row['count']} cookies"
             if row["days_left"] is not None:
                 if row["days_left"] < 0:
-                    detail += " · süresi doldu"
+                    detail += " · expired"
                 elif row["days_left"] == 0:
-                    detail += " · <b>bugün bitiyor</b>"
+                    detail += " · <b>expires today</b>"
                 else:
-                    detail += f" · {row['days_left']} gün kaldı"
+                    detail += f" · {row['days_left']} days left"
             if row["expired"]:
-                detail += f" · {row['expired']} tanesi dolmuş"
+                detail += f" · {row['expired']} already expired"
             parts.append(f"   <i>{detail}</i>")
 
         if row["failures"]:
             reason = _esc(row["last_reason"])[:60]
             parts.append(
-                f"   ⚠️ <b>{row['failures']}</b> başarısız istek"
-                + (f" · son sebep: {reason}" if reason else "")
+                f"   ⚠️ <b>{row['failures']}</b> failed requests"
+                + (f" · last reason: {reason}" if reason else "")
             )
 
         lines.append("\n".join(parts))
@@ -466,14 +461,14 @@ def _cookie_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     lines.append("")
     if problems:
         names = ", ".join(r["platform"] for r in problems)
-        lines.append(f"👉 <b>Yenilenmesi gereken:</b> {names}")
+        lines.append(f"👉 <b>Needs refreshing:</b> {names}")
     else:
-        lines.append("✅ Tüm platformların çerezleri geçerli.")
+        lines.append("✅ Every platform's cookies are valid.")
 
     total_fail = cookie_log.total() if cookie_log else 0
     if total_fail:
         lines.append(
-            f"\n📁 Toplam <b>{total_fail}</b> cookie kaynaklı hata "
+            f"\n📁 <b>{total_fail}</b> total cookie related errors "
             f"— <code>logs/cookie_errors.log</code>"
         )
 
@@ -481,26 +476,26 @@ def _cookie_text(context: ContextTypes.DEFAULT_TYPE) -> str:
 
 
 def _cookie_log_text(context: ContextTypes.DEFAULT_TYPE) -> str:
-    """Son cookie hatalarının ham log satırları."""
+    """Raw lines of the most recent cookie failures."""
     cookie_log = context.application.bot_data.get("cookie_log")
     if not cookie_log:
-        return "<b>🍪 Cookie Log</b>\n\nKayıt yok."
+        return "<b>🍪 Cookie Log</b>\n\nNo records."
 
     entries = cookie_log.tail(12)
     if not entries:
         return (
             "<b>🍪 Cookie Log</b>\n\n"
-            "Henüz cookie kaynaklı bir hata kaydedilmedi. ✅"
+            "No cookie related error has been recorded yet. ✅"
         )
 
     body = "\n\n".join(f"<code>{_esc(line)}</code>" for line in reversed(entries))
-    return f"<b>🍪 Cookie Log</b> <i>(son {len(entries)})</i>\n\n{body}"
+    return f"<b>🍪 Cookie Log</b> <i>(last {len(entries)})</i>\n\n{body}"
 
 
-# ── Analitik dashboard ───────────────────────────────────────────────────────
+# ── Analytics dashboard ──────────────────────────────────────────────────────
 
 def _sparkline(values: list[int]) -> str:
-    """Küçük metin grafiği — günlük indirme eğilimi."""
+    """Small text chart of the daily download trend."""
     if not values or max(values) == 0:
         return "▁" * len(values)
     blocks = "▁▂▃▄▅▆▇█"
@@ -518,7 +513,7 @@ def _bar(value: int, total: int, width: int = 10) -> str:
 def _analytics_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     db = context.application.bot_data.get("db")
     if not db:
-        return "<b>📈 Analitik</b>\n\nVeritabanı yok."
+        return "<b>📈 Analytics</b>\n\nNo database."
 
     data = analytics.summary(db)
     daily = analytics.daily_counts(db, 7)
@@ -531,43 +526,43 @@ def _analytics_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     week_total = sum(counts)
 
     lines = [
-        "<b>📈 Analitik Panosu</b>",
+        "<b>📈 Analytics dashboard</b>",
         "",
-        "<b>Aktif kullanıcı</b>",
-        f"  Bugün: <b>{data['dau']}</b> · Hafta: <b>{data['wau']}</b> · Ay: <b>{data['mau']}</b>",
+        "<b>Active users</b>",
+        f"  Today: <b>{data['dau']}</b> · Week: <b>{data['wau']}</b> · Month: <b>{data['mau']}</b>",
         "",
-        "<b>İndirme</b>",
-        f"  Bugün: <b>{data['downloads_today']}</b> · "
-        f"7 gün: <b>{week_total}</b> · Toplam: <b>{data['total_downloads']}</b>",
-        f"  <code>{_sparkline(counts)}</code> <i>son 7 gün</i>",
+        "<b>Downloads</b>",
+        f"  Today: <b>{data['downloads_today']}</b> · "
+        f"7 days: <b>{week_total}</b> · Total: <b>{data['total_downloads']}</b>",
+        f"  <code>{_sparkline(counts)}</code> <i>last 7 days</i>",
         "",
-        "<b>Başarı oranı (7 gün)</b>",
+        "<b>Success rate (7 days)</b>",
         f"  <code>{_bar(fail['ok'], fail['total'])}</code> "
-        f"<b>%{fail['rate']:.0f}</b> ({fail['ok']}/{fail['total']})",
+        f"<b>{fail['rate']:.0f}%</b> ({fail['ok']}/{fail['total']})",
         "",
-        "<b>Sohbet dağılımı</b>",
-        f"  👤 Özel: <b>{split['private']}</b> · 👥 Grup: <b>{split['group']}</b>",
+        "<b>Chat split</b>",
+        f"  👤 Private: <b>{split['private']}</b> · 👥 Group: <b>{split['group']}</b>",
     ]
 
     if platforms:
         total = sum(int(p["count"]) for p in platforms) or 1
         lines.append("")
-        lines.append("<b>Platform dağılımı (30 gün)</b>")
+        lines.append("<b>Platform distribution (30 days)</b>")
         for row in platforms[:6]:
             count = int(row["count"])
             lines.append(
                 f"  {_esc(row['platform']):<14} <code>{_bar(count, total, 8)}</code> "
-                f"<b>{count}</b> <i>(%{count * 100 // total})</i>"
+                f"<b>{count}</b> <i>({count * 100 // total}%)</i>"
             )
 
     if sources:
         parts = " · ".join(f"{_esc(s['source'])}: <b>{s['count']}</b>" for s in sources)
         lines.append("")
-        lines.append(f"<b>İndirme kaynağı</b>\n  {parts}")
+        lines.append(f"<b>Download source</b>\n  {parts}")
 
     buffer = context.application.bot_data.get("activity_buffer")
     if buffer and buffer.pending():
-        lines.append(f"\n<i>({buffer.pending()} aktivite kaydı yazılmayı bekliyor)</i>")
+        lines.append(f"\n<i>({buffer.pending()} activity records waiting to be written)</i>")
 
     return "\n".join(lines)
 
@@ -575,13 +570,13 @@ def _analytics_text(context: ContextTypes.DEFAULT_TYPE) -> str:
 def _top_users_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     db = context.application.bot_data.get("db")
     if not db:
-        return "<b>🏆 En Aktif Kullanıcılar</b>\n\nVeritabanı yok."
+        return "<b>🏆 Most Active Users</b>\n\nNo database."
 
     rows = analytics.top_users(db, 15)
     if not rows:
-        return "<b>🏆 En Aktif Kullanıcılar</b>\n\nHenüz kayıt yok."
+        return "<b>🏆 Most Active Users</b>\n\nNo records yet."
 
-    lines = ["<b>🏆 En Aktif Kullanıcılar</b>", ""]
+    lines = ["<b>🏆 Most Active Users</b>", ""]
     medals = {0: "🥇", 1: "🥈", 2: "🥉"}
 
     for index, row in enumerate(rows):
@@ -591,7 +586,7 @@ def _top_users_text(context: ContextTypes.DEFAULT_TYPE) -> str:
         last = row.get("last_activity")
         when = datetime.fromtimestamp(last).strftime("%d.%m") if last else "-"
         lines.append(
-            f"{mark} {label} — <b>{row['total_downloads']}</b> indirme "
+            f"{mark} {label} — <b>{row['total_downloads']}</b> downloads "
             f"<i>({when})</i>\n     <code>{row['user_id']}</code>"
         )
 
@@ -601,24 +596,24 @@ def _top_users_text(context: ContextTypes.DEFAULT_TYPE) -> str:
 def _analytics_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🏆 En Aktif", callback_data="admin|topusers"),
-            InlineKeyboardButton("🔄 Yenile", callback_data="admin|analytics"),
+            InlineKeyboardButton("🏆 Most active", callback_data="admin|topusers"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="admin|analytics"),
         ],
         [InlineKeyboardButton("‹ Panel", callback_data="admin|panel")],
     ])
 
 
-# ── Duyuru (broadcast) ───────────────────────────────────────────────────────
+# ── Broadcast ─────────────────────────────────────────────────────────────────
 
 _BC_KIND_LABEL = {
-    "all": "herkes (kullanıcı + grup)",
-    "users": "yalnızca özel sohbetler",
-    "groups": "yalnızca gruplar",
+    "all": "everyone (users + groups)",
+    "users": "private chats only",
+    "groups": "groups only",
 }
 
 
 def _bc_state(context: ContextTypes.DEFAULT_TYPE) -> dict:
-    """Admin'in duyuru taslağı (tek admin olduğu için uygulama genelinde tek)."""
+    """The admin's broadcast draft (single admin, so it's application-wide)."""
     return context.application.bot_data.setdefault("broadcast_compose", {})
 
 
@@ -632,16 +627,16 @@ def _broadcast_text(context: ContextTypes.DEFAULT_TYPE) -> str:
         try:
             counts = {k: len(db.broadcast_targets(kind=k)) for k in counts}
         except Exception:
-            logger.exception("Duyuru hedefleri okunamadı")
+            logger.exception("Could not read broadcast targets")
 
     lines = [
-        "<b>📣 Duyuru Gönder</b>",
+        "<b>📣 Send a Broadcast</b>",
         "",
-        f"🎯 Hedef kitle: <b>{_BC_KIND_LABEL.get(kind, kind)}</b>",
-        f"👥 Ulaşılacak: <b>{counts.get(kind, 0)}</b> sohbet",
+        f"🎯 Audience: <b>{_BC_KIND_LABEL.get(kind, kind)}</b>",
+        f"👥 Reach: <b>{counts.get(kind, 0)}</b> chats",
         "",
-        f"<i>Toplam: {counts['users']} özel · {counts['groups']} grup "
-        "(duyuru kapatanlar ve engelleyenler hariç)</i>",
+        f"<i>Total: {counts['users']} private · {counts['groups']} groups "
+        "(opted-out and blocked chats excluded)</i>",
         "",
     ]
 
@@ -650,15 +645,15 @@ def _broadcast_text(context: ContextTypes.DEFAULT_TYPE) -> str:
         preview = _esc(message)
         if len(preview) > 600:
             preview = preview[:600] + "…"
-        lines.append("<b>📝 Mesaj önizleme</b>")
+        lines.append("<b>📝 Message preview</b>")
         lines.append(f"<blockquote>{preview}</blockquote>")
         lines.append("")
-        lines.append("Göndermeye hazır. ⬇️")
+        lines.append("Ready to send. ⬇️")
     else:
         lines.append(
-            "✍️ <b>Mesaj yok.</b>\n"
-            "<i>Aşağıdaki butona basıp duyuru metnini bana gönder. "
-            "HTML biçimlendirme (kalın, italik, link) kullanabilirsin.</i>"
+            "✍️ <b>No message yet.</b>\n"
+            "<i>Tap the button below and send me the broadcast text. "
+            "HTML formatting (bold, italic, links) is supported.</i>"
         )
 
     return "\n".join(lines)
@@ -674,25 +669,25 @@ def _broadcast_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMar
             ("🔘 " if kind == k else "⚪️ ") + label,
             callback_data=f"admin|bckind|{k}",
         )
-        for k, label in (("all", "Herkes"), ("users", "Özel"), ("groups", "Grup"))
+        for k, label in (("all", "Everyone"), ("users", "Private"), ("groups", "Groups"))
     ]
 
     rows = [kind_row]
 
     if has_text:
-        rows.append([InlineKeyboardButton("🚀 Gönder", callback_data="admin|bcconfirm")])
+        rows.append([InlineKeyboardButton("🚀 Send", callback_data="admin|bcconfirm")])
         rows.append([
-            InlineKeyboardButton("✏️ Mesajı Değiştir", callback_data="admin|bcwrite"),
-            InlineKeyboardButton("🗑 Mesajı Sil", callback_data="admin|bcclear"),
+            InlineKeyboardButton("✏️ Edit message", callback_data="admin|bcwrite"),
+            InlineKeyboardButton("🗑 Clear message", callback_data="admin|bcclear"),
         ])
     else:
-        rows.append([InlineKeyboardButton("✍️ Mesaj Yaz", callback_data="admin|bcwrite")])
+        rows.append([InlineKeyboardButton("✍️ Write message", callback_data="admin|bcwrite")])
 
     rows.append([InlineKeyboardButton("‹ Panel", callback_data="admin|panel")])
     return InlineKeyboardMarkup(rows)
 
 
-# ── Log görüntüleyici ────────────────────────────────────────────────────────
+# ── Log viewer ────────────────────────────────────────────────────────────────
 
 _LOG_LEVEL_ICON = {
     "ERROR": "🔴",
@@ -702,23 +697,21 @@ _LOG_LEVEL_ICON = {
     "DEBUG": "⚫️",
 }
 
-# Panelde gösterilecek log kanalları
 _LOG_SOURCES = {
-    "live": ("Canlı akış (bellek)", None, "🔴 Canlı"),
+    "live": ("Live stream (memory)", None, "🔴 Live"),
     "bot": ("bot.log", "bot.log", "📄 Bot"),
-    "downloads": ("downloads.log", "downloads.log", "📥 İndirme"),
-    "cookie": ("cookie_errors.log", "cookie_errors.log", "🍪 Cookie"),
+    "downloads": ("downloads.log", "downloads.log", "📥 Downloads"),
+    "cookie": ("cookie_errors.log", "cookie_errors.log", "🍪 Cookies"),
 }
 
 
 def _read_log_tail(path, lines: int = 25) -> list[str]:
-    """Dosyanın son N satırını okur (büyük dosyayı tamamen belleğe almadan)."""
+    """Reads the last N lines of a file without loading it all into memory."""
     try:
         size = path.stat().st_size
     except OSError:
         return []
 
-    # Son ~60 KB yeterli: 25 satır için fazlasıyla.
     chunk = min(size, 60_000)
     try:
         with path.open("rb") as fh:
@@ -740,22 +733,19 @@ def _logs_text(context: ContextTypes.DEFAULT_TYPE, source: str = "live", level: 
         from bot.log_buffer import last_lines
         entries = last_lines(40)
 
-    # Seviye filtresi
     if level != "all":
         entries = [e for e in entries if f"| {level} " in e or f"| {level}|" in e]
 
     if not entries:
-        # Mesaj duruma göre değişir: süzgeç sonuç vermediyse "kayıt yok"
-        # demek yanıltıcı olur (dosya dolu ama o seviyede satır yok).
         if level != "all":
             return (
                 f"<b>📜 Log — {label}</b>\n\n"
-                f"<i>Bu kanalda <b>{level}</b> seviyesinde kayıt yok.</i> ✅\n\n"
-                "Tüm satırları görmek için «Hepsi» süzgecini seç."
+                f"<i>No <b>{level}</b> lines in this channel.</i> ✅\n\n"
+                "Select «All» to see every line."
             )
         return (
             f"<b>📜 Log — {label}</b>\n\n"
-            "<i>Kayıt yok — bu kanala henüz hiçbir şey yazılmamış.</i>"
+            "<i>Nothing here yet.</i>"
         )
 
     entries = entries[-15:]
@@ -766,13 +756,12 @@ def _logs_text(context: ContextTypes.DEFAULT_TYPE, source: str = "live", level: 
             if f"| {name} " in line or f"| {name}|" in line:
                 icon = symbol + " "
                 break
-        # Uzun satırları kırp — Telegram mesaj sınırı 4096
         trimmed = line if len(line) <= 220 else line[:220] + "…"
         body_parts.append(f"{icon}<code>{_esc(trimmed)}</code>")
 
-    filter_note = "" if level == "all" else f" · süzgeç: <b>{level}</b>"
+    filter_note = "" if level == "all" else f" · filter: <b>{level}</b>"
     return (
-        f"<b>📜 Log — {label}</b> <i>(son {len(entries)}{filter_note})</i>\n\n"
+        f"<b>📜 Log — {label}</b> <i>(last {len(entries)}{filter_note})</i>\n\n"
         + "\n\n".join(body_parts)
     )
 
@@ -791,21 +780,21 @@ def _logs_keyboard(source: str = "live", level: str = "all") -> InlineKeyboardMa
             ("• " if level == key else "") + name,
             callback_data=f"admin|logs|{source}|{key}",
         )
-        for key, name in (("all", "Hepsi"), ("ERROR", "🔴 Hata"), ("WARNING", "🟠 Uyarı"))
+        for key, name in (("all", "All"), ("ERROR", "🔴 Errors"), ("WARNING", "🟠 Warnings"))
     ]
 
     return InlineKeyboardMarkup([
         source_row,
         level_row,
         [
-            InlineKeyboardButton("📤 Dosya İndir", callback_data=f"admin|logfile|{source}"),
-            InlineKeyboardButton("🔄 Yenile", callback_data=f"admin|logs|{source}|{level}"),
+            InlineKeyboardButton("📤 Download file", callback_data=f"admin|logfile|{source}"),
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"admin|logs|{source}|{level}"),
         ],
         [InlineKeyboardButton("‹ Panel", callback_data="admin|panel")],
     ])
 
 
-# ── Kullanıcı arama / profil / ban yönetimi ──────────────────────────────────
+# ── User search / profile / ban management ───────────────────────────────────
 
 def _user_label(row: dict) -> str:
     name = row.get("username")
@@ -821,22 +810,22 @@ def _search_results_text(context: ContextTypes.DEFAULT_TYPE, term: str) -> tuple
     users = db.search_users(term, limit=8) if db else []
     chats = db.search_chats(term, limit=5) if db else []
 
-    lines = [f"<b>🔍 Arama:</b> <code>{_esc(term)}</code>", ""]
+    lines = [f"<b>🔍 Search:</b> <code>{_esc(term)}</code>", ""]
     rows: list[list[InlineKeyboardButton]] = []
 
     if not users and not chats:
         lines.append(
-            "Sonuç yok.\n\n<i>Kullanıcı adı, ad veya sayısal ID ile arayabilirsin.</i>"
+            "No results.\n\n<i>Search by username, first name or a numeric ID.</i>"
         )
     else:
         if users:
-            lines.append(f"<b>👤 Kullanıcılar ({len(users)})</b>")
+            lines.append(f"<b>👤 Users ({len(users)})</b>")
             for row in users:
                 uid = int(row["user_id"])
                 banned = permissions.is_user_banned(uid)
                 mark = "🚫" if banned else "✅"
                 lines.append(
-                    f"{mark} {_user_label(row)} — <b>{row.get('total_downloads', 0)}</b> indirme\n"
+                    f"{mark} {_user_label(row)} — <b>{row.get('total_downloads', 0)}</b> downloads\n"
                     f"    <code>{uid}</code>"
                 )
                 rows.append([InlineKeyboardButton(
@@ -844,22 +833,22 @@ def _search_results_text(context: ContextTypes.DEFAULT_TYPE, term: str) -> tuple
                 )])
 
         if chats:
-            lines.append(f"\n<b>💬 Sohbetler ({len(chats)})</b>")
+            lines.append(f"\n<b>💬 Chats ({len(chats)})</b>")
             for row in chats:
                 cid = int(row["chat_id"])
                 banned = permissions.is_group_banned(cid)
                 mark = "🚫" if banned else "✅"
-                title = _esc(row.get("title") or "(başlıksız)")[:30]
+                title = _esc(row.get("title") or "(untitled)")[:30]
                 lines.append(f"{mark} <b>{title}</b> — <code>{cid}</code>")
-                # Sohbetler önceden yalnızca listeleniyordu, butonu yoktu:
-                # panelden bir grubu banlamanın hiçbir yolu yoktu.
+                # Chats used to be listed with no button — banning a group
+                # from the panel wasn't possible at all.
                 rows.append([InlineKeyboardButton(
                     f"{mark} {title[:20]}", callback_data=f"admin|chatinfo|{cid}"
                 )])
 
     rows.append([
-        InlineKeyboardButton("🔍 Yeni Arama", callback_data="admin|usersearch"),
-        InlineKeyboardButton("‹ Banlar", callback_data="admin|bans"),
+        InlineKeyboardButton("🔍 New search", callback_data="admin|usersearch"),
+        InlineKeyboardButton("‹ Bans", callback_data="admin|bans"),
     ])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
@@ -874,10 +863,10 @@ def _user_info_text(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> tuple[s
 
     if not row:
         lines = [
-            f"<b>👤 Kullanıcı</b> <code>{user_id}</code>",
+            f"<b>👤 User</b> <code>{user_id}</code>",
             "",
-            "<i>Veritabanında kaydı yok (botu hiç kullanmamış olabilir).</i>",
-            f"\nBan durumu: {'🚫 <b>Banlı</b>' if banned else '✅ Banlı değil'}",
+            "<i>No record in the database (may have never used the bot).</i>",
+            f"\nBan status: {'🚫 <b>Banned</b>' if banned else '✅ Not banned'}",
         ]
     else:
         first = datetime.fromtimestamp(row["first_seen"]).strftime("%d.%m.%Y")
@@ -886,50 +875,50 @@ def _user_info_text(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> tuple[s
             f"<b>👤 {_user_label(row)}</b>",
             f"<code>{user_id}</code>",
             "",
-            f"📥 Toplam indirme: <b>{row['total_downloads']}</b>",
-            f"📅 İlk görülme: <b>{first}</b>",
-            f"🕐 Son aktivite: <b>{last}</b>",
-            f"🔔 Duyuru: <b>{'kapalı' if row['broadcast_opt_out'] else 'açık'}</b>",
-            f"🚷 Erişilemez: <b>{'evet' if row['is_blocked'] else 'hayır'}</b>",
-            f"\nBan durumu: {'🚫 <b>Banlı</b>' if banned else '✅ Banlı değil'}",
+            f"📥 Total downloads: <b>{row['total_downloads']}</b>",
+            f"📅 First seen: <b>{first}</b>",
+            f"🕐 Last active: <b>{last}</b>",
+            f"🔔 Broadcasts: <b>{'off' if row['broadcast_opt_out'] else 'on'}</b>",
+            f"🚷 Unreachable: <b>{'yes' if row['is_blocked'] else 'no'}</b>",
+            f"\nBan status: {'🚫 <b>Banned</b>' if banned else '✅ Not banned'}",
         ]
 
         if live_guard:
             remaining = live_guard.ban_remaining(user_id)
             if remaining > 0:
                 lines.append(
-                    f"⏳ Canlı yayın banı: <b>{format_duration(remaining)}</b> kaldı"
+                    f"⏳ Livestream ban: <b>{format_duration(remaining)}</b> left"
                 )
 
         recent = db.user_downloads(user_id, 5) if db else []
         if recent:
-            lines.append("\n<b>Son indirmeler</b>")
+            lines.append("\n<b>Recent downloads</b>")
             for item in recent:
                 when = datetime.fromtimestamp(item["created_at"]).strftime("%d.%m %H:%M")
                 icon = "✅" if item["result"] == "success" else "❌"
                 lines.append(f"  {icon} {_esc(item['platform'] or '—')} · <i>{when}</i>")
 
     action = (
-        InlineKeyboardButton("✅ Banı Kaldır", callback_data=f"admin|unban|{user_id}")
+        InlineKeyboardButton("✅ Remove ban", callback_data=f"admin|unban|{user_id}")
         if banned else
-        InlineKeyboardButton("🚫 Banla", callback_data=f"admin|banask|{user_id}")
+        InlineKeyboardButton("🚫 Ban", callback_data=f"admin|banask|{user_id}")
     )
 
     rows = [[action]]
     if live_guard and live_guard.ban_remaining(user_id) > 0:
         rows.append([InlineKeyboardButton(
-            "⏳ Canlı Yayın Banını Kaldır", callback_data=f"admin|livewipe|{user_id}"
+            "⏳ Clear livestream ban", callback_data=f"admin|livewipe|{user_id}"
         )])
     rows.append([
-        InlineKeyboardButton("🔍 Arama", callback_data="admin|usersearch"),
-        InlineKeyboardButton("‹ Banlar", callback_data="admin|bans"),
+        InlineKeyboardButton("🔍 Search", callback_data="admin|usersearch"),
+        InlineKeyboardButton("‹ Bans", callback_data="admin|bans"),
     ])
 
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
 def _chat_info_text(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> tuple[str, InlineKeyboardMarkup]:
-    """Grup/kanal profili — kullanıcı profilinin sohbet karşılığı."""
+    """Group/channel profile — the chat equivalent of the user profile."""
     db = context.application.bot_data.get("db")
     permissions = context.application.bot_data["permissions"]
     manager = context.application.bot_data["process_manager"]
@@ -944,43 +933,43 @@ def _chat_info_text(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> tuple[s
 
     if not row:
         lines = [
-            f"<b>💬 Sohbet</b> <code>{chat_id}</code>",
+            f"<b>💬 Chat</b> <code>{chat_id}</code>",
             "",
-            "<i>Veritabanında kaydı yok.</i>",
+            "<i>No record in the database.</i>",
         ]
     else:
         first = datetime.fromtimestamp(row["first_seen"]).strftime("%d.%m.%Y")
         last = datetime.fromtimestamp(row["last_activity"]).strftime("%d.%m.%Y %H:%M")
         lines = [
-            f"<b>💬 {_esc(row.get('title') or '(başlıksız)')}</b>",
+            f"<b>💬 {_esc(row.get('title') or '(untitled)')}</b>",
             f"<code>{chat_id}</code> · {_esc(row.get('chat_type') or '—')}",
             "",
-            f"📥 Toplam indirme: <b>{row['total_downloads']}</b>",
-            f"📅 İlk görülme: <b>{first}</b>",
-            f"🕐 Son aktivite: <b>{last}</b>",
-            f"🔔 Duyuru: <b>{'kapalı' if row['broadcast_opt_out'] else 'açık'}</b>",
+            f"📥 Total downloads: <b>{row['total_downloads']}</b>",
+            f"📅 First seen: <b>{first}</b>",
+            f"🕐 Last active: <b>{last}</b>",
+            f"🔔 Broadcasts: <b>{'off' if row['broadcast_opt_out'] else 'on'}</b>",
         ]
 
-    lines.append(f"\nBan durumu: {'🚫 <b>Banlı</b>' if banned else '✅ Banlı değil'}")
+    lines.append(f"\nBan status: {'🚫 <b>Banned</b>' if banned else '✅ Not banned'}")
     if active:
-        lines.append(f"⚙️ Aktif indirme: <b>{active}</b>")
+        lines.append(f"⚙️ Active downloads: <b>{active}</b>")
 
     action = (
-        InlineKeyboardButton("✅ Banı Kaldır", callback_data=f"admin|unban|{chat_id}")
+        InlineKeyboardButton("✅ Remove ban", callback_data=f"admin|unban|{chat_id}")
         if banned else
-        InlineKeyboardButton("🚫 Grubu Banla", callback_data=f"admin|banask|{chat_id}")
+        InlineKeyboardButton("🚫 Ban group", callback_data=f"admin|banask|{chat_id}")
     )
     rows = [
         [action],
         [
-            InlineKeyboardButton("🔍 Arama", callback_data="admin|usersearch"),
-            InlineKeyboardButton("‹ Banlar", callback_data="admin|bans"),
+            InlineKeyboardButton("🔍 Search", callback_data="admin|usersearch"),
+            InlineKeyboardButton("‹ Bans", callback_data="admin|bans"),
         ],
     ]
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
-# ── Ban listesi ──
+# ── Ban list ──
 def _bans_screen(context: ContextTypes.DEFAULT_TYPE) -> tuple[str, InlineKeyboardMarkup]:
     permissions = context.application.bot_data["permissions"]
     db = context.application.bot_data.get("db")
@@ -988,30 +977,30 @@ def _bans_screen(context: ContextTypes.DEFAULT_TYPE) -> tuple[str, InlineKeyboar
     users = bans.get("users", [])
     groups = bans.get("groups", [])
 
-    lines = ["<b>🚫 Ban Yönetimi</b>", ""]
+    lines = ["<b>🚫 Ban Management</b>", ""]
     rows: list[list[InlineKeyboardButton]] = []
 
-    lines.append(f"<b>Kullanıcılar ({len(users)})</b>")
+    lines.append(f"<b>Users ({len(users)})</b>")
     if not users:
         lines.append("  —")
     for uid in users[:8]:
         row = db.get_user(uid) if db else None
         label = _user_label(row) if row else f"ID {uid}"
         lines.append(f"  • {label} — <code>{uid}</code>")
-        # Banlı kaydın üstüne tıklanabilirlik: banı kaldırmanın tek yolu
-        # /unbanid komutunu elle yazmaktı.
+        # Clicking a banned entry was previously impossible; /unbanid had to
+        # be typed by hand.
         rows.append([InlineKeyboardButton(
             f"👤 {label[:24]}", callback_data=f"admin|userinfo|{uid}"
         )])
     if len(users) > 8:
         lines.append(f"  …+{len(users) - 8}")
 
-    lines.append(f"\n<b>Gruplar ({len(groups)})</b>")
+    lines.append(f"\n<b>Groups ({len(groups)})</b>")
     if not groups:
         lines.append("  —")
     for cid in groups[:8]:
         found = db.search_chats(str(cid), limit=1) if db else []
-        title = _esc(found[0].get("title") or "(başlıksız)") if found else f"ID {cid}"
+        title = _esc(found[0].get("title") or "(untitled)") if found else f"ID {cid}"
         lines.append(f"  • {title} — <code>{cid}</code>")
         rows.append([InlineKeyboardButton(
             f"💬 {title[:24]}", callback_data=f"admin|chatinfo|{cid}"
@@ -1020,17 +1009,17 @@ def _bans_screen(context: ContextTypes.DEFAULT_TYPE) -> tuple[str, InlineKeyboar
         lines.append(f"  …+{len(groups) - 8}")
 
     lines.append(
-        "\n<i>Komutlar:</i> <code>/banid ID</code> · <code>/unbanid ID</code>\n"
-        "<i>Negatif ID grubu, pozitif ID kullanıcıyı banlar.</i>"
+        "\n<i>Commands:</i> <code>/banid ID</code> · <code>/unbanid ID</code>\n"
+        "<i>A negative ID bans a group, a positive ID bans a user.</i>"
     )
 
-    rows.append([InlineKeyboardButton("🔍 Kullanıcı / Grup Ara", callback_data="admin|usersearch")])
+    rows.append([InlineKeyboardButton("🔍 Search users / groups", callback_data="admin|usersearch")])
     rows.append([InlineKeyboardButton("‹ Panel", callback_data="admin|panel")])
 
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
-# ── Sistem durumu (status_command ile aynı bilgi, panel içinde) ──
+# ── System status (same info as status_command, inside the panel) ──
 def _system_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     config = context.application.bot_data["config"]
     manager = context.application.bot_data["process_manager"]
@@ -1038,17 +1027,17 @@ def _system_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     ffmpeg = "✅" if shutil.which("ffmpeg") else "❌"
     gallery = "✅" if shutil.which("gallery-dl") else "❌"
     return (
-        "<b>🖥 Sistem Durumu</b>\n\n"
-        f"Local Bot API: <b>{'açık' if config.local_bot_api_base else 'kapalı'}</b>\n"
-        f"Aktif indirme: <b>{active}</b> / {config.max_simultaneous_downloads}\n"
-        f"Max dosya: <b>{config.max_file_size_mb} MB</b>\n\n"
+        "<b>🖥 System Status</b>\n\n"
+        f"Local Bot API: <b>{'on' if config.local_bot_api_base else 'off'}</b>\n"
+        f"Active downloads: <b>{active}</b> / {config.max_simultaneous_downloads}\n"
+        f"Max file size: <b>{config.max_file_size_mb} MB</b>\n\n"
         f"Python: <code>{sys.version.split()[0]}</code>\n"
         f"yt-dlp: <code>{yt_dlp.version.__version__}</code>\n"
         f"ffmpeg: {ffmpeg} | gallery-dl: {gallery}"
     )
 
 
-# ── Kullanım listesi (sayfalı) ──
+# ── Usage list (paginated) ──
 def _usage_text(context: ContextTypes.DEFAULT_TYPE, page: int, page_size: int = 8) -> tuple[str, InlineKeyboardMarkup]:
     import html as _html
 
@@ -1059,17 +1048,17 @@ def _usage_text(context: ContextTypes.DEFAULT_TYPE, page: int, page_size: int = 
     start = page * page_size
     chunk = chats[start:start + page_size]
 
-    lines = [f"<b>💬 Bot Kullanımı</b> — {total} sohbet"]
+    lines = [f"<b>💬 Bot Usage</b> — {total} chats"]
     if not chunk:
-        lines.append("\nHenüz kayıt yok.")
+        lines.append("\nNo records yet.")
     for c in chunk:
         last = c.get("last_activity")
         when = datetime.fromtimestamp(last).strftime("%d.%m.%Y %H:%M") if last else "-"
-        ctype = {"private": "özel", "group": "grup", "supergroup": "grup", "channel": "kanal"}.get(c.get("type", ""), c.get("type", "-"))
-        title = _html.escape(str(c.get("title") or "(başlıksız)"))[:38]
+        ctype = {"private": "private", "group": "group", "supergroup": "group", "channel": "channel"}.get(c.get("type", ""), c.get("type", "-"))
+        title = _html.escape(str(c.get("title") or "(untitled)"))[:38]
         lines.append(
             f"\n• <b>{title}</b> <i>({ctype})</i>\n"
-            f"  <code>{c.get('chat_id')}</code> · indirme: <b>{c.get('total_downloads', 0)}</b> · {when}"
+            f"  <code>{c.get('chat_id')}</code> · downloads: <b>{c.get('total_downloads', 0)}</b> · {when}"
         )
 
     nav = []
@@ -1084,7 +1073,7 @@ def _usage_text(context: ContextTypes.DEFAULT_TYPE, page: int, page_size: int = 
 
 
 async def _start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Duyuru gönderimini başlatır ve panelde canlı ilerleme gösterir."""
+    """Starts sending the broadcast and shows live progress in the panel."""
     query = update.callback_query
     app = context.application
     draft = _bc_state(context)
@@ -1094,23 +1083,23 @@ async def _start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     kind = draft.get("kind", "all")
 
     if not text or not db:
-        await query.answer("Gönderilecek mesaj yok.", show_alert=True)
+        await query.answer("No message to send.", show_alert=True)
         return
 
-    # Aynı anda tek duyuru — ikinci kez basılırsa yenisi başlamasın.
+    # Only one broadcast at a time — a second tap should not start another.
     running = app.bot_data.get("broadcast_job")
     if running and running.running:
-        await query.answer("Zaten bir duyuru gönderiliyor.", show_alert=True)
+        await query.answer("A broadcast is already in progress.", show_alert=True)
         return
 
     targets = await asyncio.to_thread(db.broadcast_targets, kind=kind)
     job = BroadcastJob(text=text, targets=targets, kind=kind)
     app.bot_data["broadcast_job"] = job
 
-    await query.answer("Gönderim başladı.")
+    await query.answer("Sending started.")
 
     stop_markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🛑 Durdur", callback_data="admin|bcstop"),
+        InlineKeyboardButton("🛑 Stop", callback_data="admin|bcstop"),
     ]])
     await _edit(query, job.progress_text(), stop_markup)
 
@@ -1122,9 +1111,9 @@ async def _start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         try:
             await run_broadcast(app, job, db=db, on_progress=on_progress)
         except Exception:
-            logger.exception("Duyuru gönderimi çöktü")
+            logger.exception("Broadcast delivery crashed")
         finally:
-            # Taslağı temizle ki yanlışlıkla ikinci kez gönderilmesin.
+            # Clear the draft so it can't be sent twice by mistake.
             draft.pop("text", None)
             draft["awaiting"] = False
             try:
@@ -1132,23 +1121,23 @@ async def _start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     query,
                     job.summary_text(),
                     InlineKeyboardMarkup([[
-                        InlineKeyboardButton("📣 Yeni Duyuru", callback_data="admin|broadcast"),
+                        InlineKeyboardButton("📣 New broadcast", callback_data="admin|broadcast"),
                         InlineKeyboardButton("‹ Panel", callback_data="admin|panel"),
                     ]]),
                 )
             except Exception:
-                logger.exception("Duyuru özeti gösterilemedi")
+                logger.exception("Could not show the broadcast summary")
 
     asyncio.create_task(runner())
 
 
 async def broadcast_compose_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Admin duyuru metnini yazdığında yakalar.
+    Catches the broadcast text the admin sends after tapping "Write message".
 
-    "✍️ Mesaj Yaz" sonrası admin'in ÖZEL sohbete yazdığı ilk mesaj taslak
-    olarak alınır. Bu handler diğer handler'lardan önce çalışır ve link
-    işleyicisinin bu mesajı indirme isteği sanmasını engeller.
+    The admin's first message in a PRIVATE chat after that tap becomes the
+    draft. This handler runs before the link handler, so it never gets
+    mistaken for a download request.
     """
     if not update.effective_user or not update.message:
         return
@@ -1161,7 +1150,7 @@ async def broadcast_compose_message(update: Update, context: ContextTypes.DEFAUL
 
     draft = _bc_state(context)
 
-    # Kullanıcı arama modu (duyuru yazma ile aynı "bekleyen giriş" mekanizması)
+    # User search mode uses the same "awaiting input" mechanism as broadcast writing.
     if draft.get("awaiting_search"):
         draft["awaiting_search"] = False
         term = (update.message.text or "").strip()
@@ -1197,8 +1186,8 @@ async def broadcast_compose_message(update: Update, context: ContextTypes.DEFAUL
     draft["text"] = text
     draft["awaiting"] = False
 
-    # Taslağı aldık; panel mesajını güncelle ve admin'in yazdığı mesajı sil
-    # (sohbet temiz kalsın, duyuru metni ortalıkta durmasın).
+    # Got the draft; update the panel message and delete the admin's message
+    # (keep the chat clean, don't leave the broadcast text lying around).
     try:
         await update.message.delete()
     except Exception:
@@ -1217,7 +1206,7 @@ async def broadcast_compose_message(update: Update, context: ContextTypes.DEFAUL
                 disable_web_page_preview=True,
             )
         except Exception:
-            logger.warning("Duyuru paneli güncellenemedi, yeni mesaj gönderiliyor")
+            logger.warning("Broadcast panel could not be updated, sending a new message")
             await update.effective_chat.send_message(
                 _broadcast_text(context),
                 parse_mode="HTML",
@@ -1232,7 +1221,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not update.message or not _admin_ok(update, context):
         return
     state = context.application.bot_data["bot_state"]
-    await safe_reply(update.message, 
+    await safe_reply(update.message,
         _panel_text(context),
         parse_mode="HTML",
         reply_markup=_panel_keyboard(state),
@@ -1241,14 +1230,14 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """admin| ile başlayan tüm panel callback'lerini yönetir."""
+    """Handles every admin| panel callback."""
     query = update.callback_query
     if not query:
         return
 
     permissions = context.application.bot_data["permissions"]
     if not permissions.is_admin(query.from_user.id if query.from_user else None):
-        await query.answer("Bu alan sadece admin için.", show_alert=True)
+        await query.answer("Admins only.", show_alert=True)
         return
 
     parts = (query.data or "").split("|")
@@ -1266,8 +1255,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if sub == "mode" and len(parts) >= 3:
-        new_mode = state.set_mode(parts[2])  # state.py içinde loglanır
-        await query.answer(f"Mod: {_MODE_LABEL.get(new_mode, new_mode)}")
+        new_mode = state.set_mode(parts[2])  # logged inside state.py
+        await query.answer(f"Mode: {_MODE_LABEL.get(new_mode, new_mode)}")
         await _edit(query, _panel_text(context), _panel_keyboard(state))
         return
 
@@ -1276,29 +1265,29 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         state.set_enabled(enabled)
         if not enabled:
             manager.shutdown()
-        await query.answer("Bot başlatıldı." if enabled else "Bot durduruldu.")
+        await query.answer("Bot started." if enabled else "Bot stopped.")
         await _edit(query, _panel_text(context), _panel_keyboard(state))
         return
 
     if sub == "langmenu":
         await query.answer()
-        await _edit(query, "<b>🌐 Bot dili</b>\n\nKullanıcı mesajlarının dili:", _language_keyboard(state.get_language()))
+        await _edit(query, "<b>🌐 Bot language</b>\n\nLanguage of user-facing messages:", _language_keyboard(state.get_language()))
         return
 
     if sub == "lang" and len(parts) >= 3:
         code = parts[2]
         if code in LANGUAGES:
-            state.set_language(code)   # kalıcı + loglanır
-            set_language(code)         # anlık uygula
-            await query.answer(f"Dil: {LANGUAGES[code]}")
+            state.set_language(code)   # persisted + logged
+            set_language(code)         # applied immediately
+            await query.answer(f"Language: {LANGUAGES[code]}")
         else:
             await query.answer()
         await _edit(query, _panel_text(context), _panel_keyboard(state))
         return
 
-    # ESKİ CALLBACK: "📊 İstatistik" butonu "📈 Analitik" ile değiştirildi.
-    # Sohbet geçmişindeki eski panel mesajlarından hâlâ tıklanabilir; ölü
-    # ekran göstermek yerine yeni ekrana yönlendiriyoruz.
+    # OLD CALLBACK: the "📊 Stats" button was replaced by "📈 Analytics".
+    # Still clickable from old panel messages in chat history; route it to
+    # the new screen instead of showing a dead one.
     if sub == "stats":
         await query.answer()
         await _edit(query, _analytics_text(context), _analytics_keyboard())
@@ -1323,7 +1312,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         cookie_log = context.application.bot_data.get("cookie_log")
         if cookie_log:
             cookie_log.reset()
-        await query.answer("Cookie hata sayaçları sıfırlandı.")
+        await query.answer("Cookie error counters reset.")
         await _edit(query, _cookie_text(context), _cookie_keyboard())
         return
 
@@ -1346,21 +1335,21 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         source = parts[2]
         label, filename, _short = _LOG_SOURCES.get(source, (None, None, None))
         if not filename:
-            await query.answer("Bu kanal bellekte tutuluyor, dosyası yok.", show_alert=True)
+            await query.answer("This channel lives in memory only, no file.", show_alert=True)
             return
 
         path = context.application.bot_data["config"].log_dir / filename
         if not path.exists() or path.stat().st_size == 0:
-            await query.answer("Dosya boş veya yok.", show_alert=True)
+            await query.answer("File is empty or missing.", show_alert=True)
             return
 
-        await query.answer("Gönderiliyor...")
+        await query.answer("Sending...")
         try:
             with path.open("rb") as fh:
                 await query.message.reply_document(document=fh, filename=filename)
         except Exception as exc:
-            logger.warning("Log dosyası gönderilemedi: %s", exc)
-            await query.answer("Dosya gönderilemedi.", show_alert=True)
+            logger.warning("Could not send the log file: %s", exc)
+            await query.answer("Could not send the file.", show_alert=True)
         return
 
     if sub == "usersearch":
@@ -1371,13 +1360,13 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer()
         await _edit(
             query,
-            "🔍 <b>Kullanıcı / sohbet ara</b>\n\n"
-            "Aranacak metni gönder:\n"
-            "• kullanıcı adı (<code>@arif</code> veya <code>arif</code>)\n"
-            "• sayısal ID (<code>8419768278</code>)\n"
-            "• grup başlığı",
+            "🔍 <b>Search a user / chat</b>\n\n"
+            "Send the text to search for:\n"
+            "• username (<code>@arif</code> or <code>arif</code>)\n"
+            "• numeric ID (<code>8419768278</code>)\n"
+            "• group title",
             InlineKeyboardMarkup([[
-                InlineKeyboardButton("‹ Vazgeç", callback_data="admin|bans"),
+                InlineKeyboardButton("‹ Cancel", callback_data="admin|bans"),
             ]]),
         )
         return
@@ -1386,7 +1375,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         try:
             uid = int(parts[2])
         except ValueError:
-            await query.answer("Geçersiz ID.", show_alert=True)
+            await query.answer("Invalid ID.", show_alert=True)
             return
         text, markup = _user_info_text(context, uid)
         await query.answer()
@@ -1397,7 +1386,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         try:
             cid = int(parts[2])
         except ValueError:
-            await query.answer("Geçersiz ID.", show_alert=True)
+            await query.answer("Invalid ID.", show_alert=True)
             return
         text, markup = _chat_info_text(context, cid)
         await query.answer()
@@ -1405,33 +1394,33 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     if sub == "banask" and len(parts) >= 3:
-        # Geri dönüşü olan ama etkili bir aksiyon: yine de onay iste.
+        # A reversible but consequential action: still ask for confirmation.
         try:
             tid = int(parts[2])
         except ValueError:
-            await query.answer("Geçersiz ID.", show_alert=True)
+            await query.answer("Invalid ID.", show_alert=True)
             return
 
         permissions = context.application.bot_data["permissions"]
         is_group = permissions.is_group_id(tid)
         back = f"admin|{'chatinfo' if is_group else 'userinfo'}|{tid}"
         detail = (
-            "Banlanan grupta bot hiç çalışmaz; o anda süren indirmeler de "
-            "iptal edilir."
+            "The bot won't respond in a banned group at all; any download "
+            "running there right now is cancelled."
             if is_group else
-            "Banlanan kullanıcı botu hiç kullanamaz ve aktif indirmesi "
-            "iptal edilir."
+            "A banned user can't use the bot at all, and their active "
+            "download is cancelled."
         )
 
         await query.answer()
         await _edit(
             query,
-            f"🚫 <b>{'Grup' if is_group else 'Kullanıcı'} banlansın mı?</b>\n\n"
+            f"🚫 <b>Ban this {'group' if is_group else 'user'}?</b>\n\n"
             f"<code>{tid}</code>\n\n"
-            f"<i>{detail} İstediğin zaman geri alabilirsin.</i>",
+            f"<i>{detail} You can undo this at any time.</i>",
             InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Evet, banla", callback_data=f"admin|ban|{tid}"),
-                InlineKeyboardButton("‹ Vazgeç", callback_data=back),
+                InlineKeyboardButton("✅ Yes, ban", callback_data=f"admin|ban|{tid}"),
+                InlineKeyboardButton("‹ Cancel", callback_data=back),
             ]]),
         )
         return
@@ -1440,26 +1429,26 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         try:
             tid = int(parts[2])
         except ValueError:
-            await query.answer("Geçersiz ID.", show_alert=True)
+            await query.answer("Invalid ID.", show_alert=True)
             return
 
         permissions = context.application.bot_data["permissions"]
 
-        # ID'nin işareti hedefi belirler: negatif → grup, pozitif → kullanıcı.
-        # Panel önceden her ID'yi kullanıcı sayıyordu.
+        # The id's sign decides the target; the panel used to treat every id
+        # as a user.
         if sub == "ban":
             is_group = permissions.ban_id(tid)
             if is_group:
                 cancelled = manager.cancel_chat_jobs(tid)
                 await query.answer(
-                    f"Grup banlandı." + (f" {cancelled} indirme iptal edildi." if cancelled else "")
+                    "Group banned." + (f" {cancelled} downloads cancelled." if cancelled else "")
                 )
             else:
                 manager.cancel_user_job(tid)
-                await query.answer(f"{tid} banlandı.")
+                await query.answer(f"{tid} banned.")
         else:
             is_group = permissions.unban_id(tid)
-            await query.answer(f"{tid} banı kaldırıldı.")
+            await query.answer(f"{tid} unbanned.")
 
         if is_group:
             text, markup = _chat_info_text(context, tid)
@@ -1472,12 +1461,12 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         try:
             uid = int(parts[2])
         except ValueError:
-            await query.answer("Geçersiz ID.", show_alert=True)
+            await query.answer("Invalid ID.", show_alert=True)
             return
         guard = context.application.bot_data.get("live_guard")
         if guard:
             guard.clear(uid)
-        await query.answer("Canlı yayın banı kaldırıldı.")
+        await query.answer("Livestream ban cleared.")
         text, markup = _user_info_text(context, uid)
         await _edit(query, text, markup)
         return
@@ -1490,11 +1479,11 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if sub == "topusers":
         await query.answer()
         await _edit(query, _top_users_text(context), InlineKeyboardMarkup([[
-            InlineKeyboardButton("‹ Analitik", callback_data="admin|analytics"),
+            InlineKeyboardButton("‹ Analytics", callback_data="admin|analytics"),
         ]]))
         return
 
-    # ── Duyuru ────────────────────────────────────────────────────────────────
+    # ── Broadcast ────────────────────────────────────────────────────────────
     if sub == "broadcast":
         await query.answer()
         await _edit(query, _broadcast_text(context), _broadcast_keyboard(context))
@@ -1515,20 +1504,20 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer()
         await _edit(
             query,
-            "✍️ <b>Duyuru metnini gönder</b>\n\n"
-            "Şimdi bana duyuru mesajını yaz — bir sonraki mesajın taslak olarak "
-            "alınacak.\n\n"
-            "<i>HTML kullanabilirsin: &lt;b&gt;kalın&lt;/b&gt;, &lt;i&gt;italik&lt;/i&gt;, "
+            "✍️ <b>Send the broadcast text</b>\n\n"
+            "Write the announcement now — your next message will be taken "
+            "as the draft.\n\n"
+            "<i>HTML is supported: &lt;b&gt;bold&lt;/b&gt;, &lt;i&gt;italic&lt;/i&gt;, "
             "&lt;a href=\"...\"&gt;link&lt;/a&gt;</i>",
             InlineKeyboardMarkup([[
-                InlineKeyboardButton("‹ Vazgeç", callback_data="admin|bccancelwrite"),
+                InlineKeyboardButton("‹ Cancel", callback_data="admin|bccancelwrite"),
             ]]),
         )
         return
 
     if sub == "bccancelwrite":
         _bc_state(context)["awaiting"] = False
-        await query.answer("Vazgeçildi.")
+        await query.answer("Cancelled.")
         await _edit(query, _broadcast_text(context), _broadcast_keyboard(context))
         return
 
@@ -1536,14 +1525,14 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         draft = _bc_state(context)
         draft.pop("text", None)
         draft["awaiting"] = False
-        await query.answer("Mesaj silindi.")
+        await query.answer("Message cleared.")
         await _edit(query, _broadcast_text(context), _broadcast_keyboard(context))
         return
 
     if sub == "bcconfirm":
         draft = _bc_state(context)
         if not draft.get("text"):
-            await query.answer("Önce bir mesaj yaz.", show_alert=True)
+            await query.answer("Write a message first.", show_alert=True)
             return
 
         db = context.application.bot_data.get("db")
@@ -1551,20 +1540,20 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         count = len(db.broadcast_targets(kind=kind)) if db else 0
 
         if not count:
-            await query.answer("Bu hedef kitlede kimse yok.", show_alert=True)
+            await query.answer("Nobody in this audience.", show_alert=True)
             return
 
         await query.answer()
         await _edit(
             query,
-            f"🚀 <b>Duyuru gönderilsin mi?</b>\n\n"
-            f"🎯 Hedef: <b>{_BC_KIND_LABEL.get(kind, kind)}</b>\n"
-            f"👥 Alıcı: <b>{count}</b> sohbet\n"
-            f"⏱ Tahmini süre: <b>~{max(1, count // 20)} saniye</b>\n\n"
-            "<i>Gönderim başladıktan sonra durdurabilirsin.</i>",
+            f"🚀 <b>Send this broadcast?</b>\n\n"
+            f"🎯 Audience: <b>{_BC_KIND_LABEL.get(kind, kind)}</b>\n"
+            f"👥 Recipients: <b>{count}</b> chats\n"
+            f"⏱ Estimated time: <b>~{max(1, count // 20)} seconds</b>\n\n"
+            "<i>You can stop it once it starts.</i>",
             InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Evet, gönder", callback_data="admin|bcsend"),
-                InlineKeyboardButton("‹ Vazgeç", callback_data="admin|broadcast"),
+                InlineKeyboardButton("✅ Yes, send", callback_data="admin|bcsend"),
+                InlineKeyboardButton("‹ Cancel", callback_data="admin|broadcast"),
             ]]),
         )
         return
@@ -1577,18 +1566,18 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         job = context.application.bot_data.get("broadcast_job")
         if job and job.running:
             job.cancelled = True
-            await query.answer("Durduruluyor...")
+            await query.answer("Stopping...")
         else:
-            await query.answer("Aktif gönderim yok.")
+            await query.answer("Nothing is running.")
         return
 
     if sub == "close":
-        await query.answer("Panel kapatıldı.")
+        await query.answer("Panel closed.")
         try:
             await query.message.delete()
         except Exception:
-            await _edit(query, "<b>⚙️ Panel kapatıldı.</b> /admin ile tekrar açabilirsin.",
-                        InlineKeyboardMarkup([[InlineKeyboardButton("Aç", callback_data="admin|panel")]]))
+            await _edit(query, "<b>⚙️ Panel closed.</b> Reopen with /admin.",
+                        InlineKeyboardMarkup([[InlineKeyboardButton("Open", callback_data="admin|panel")]]))
         return
 
     if sub == "usage" and len(parts) >= 3:
@@ -1598,23 +1587,21 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await _edit(query, text, markup)
         return
 
-    # Geri dönüşü olmayan işlem: önce onay iste.
-    # Önceden tek tıkla tüm aktif indirmeler iptal ediliyordu; yanlışlıkla
-    # basıldığında kullanıcıların işi geri getirilemiyordu.
+    # Irreversible action: ask for confirmation first. It used to cancel
+    # every active download on a single tap with no way back.
     if sub == "clear":
         active = len([j for j in manager.jobs.values() if not j.done and not j.cancelled])
         pending = len(context.application.bot_data.get("pending_jobs") or {})
         await query.answer()
         await _edit(
             query,
-            "🧹 <b>Aktif işler temizlensin mi?</b>\n\n"
-            f"• Devam eden indirme: <b>{active}</b>\n"
-            f"• Açık format menüsü: <b>{pending}</b>\n\n"
-            "<i>Bu işlem geri alınamaz; kullanıcıların devam eden "
-            "indirmeleri iptal edilir.</i>",
+            "🧹 <b>Clear active jobs?</b>\n\n"
+            f"• Downloads in progress: <b>{active}</b>\n"
+            f"• Open format menus: <b>{pending}</b>\n\n"
+            "<i>This can't be undone; users' downloads in progress will be cancelled.</i>",
             InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Evet, temizle", callback_data="admin|clear_yes"),
-                InlineKeyboardButton("‹ Vazgeç", callback_data="admin|panel"),
+                InlineKeyboardButton("✅ Yes, clear", callback_data="admin|clear_yes"),
+                InlineKeyboardButton("‹ Cancel", callback_data="admin|panel"),
             ]]),
         )
         return
@@ -1623,7 +1610,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         manager.shutdown()
         cleared = await clear_all_pending(context.application)
         context.application.bot_data["playlist_sessions"] = {}
-        await query.answer(f"Temizlendi. ({cleared} menü kaldırıldı)")
+        await query.answer(f"Cleared. ({cleared} menus removed)")
         await _edit(query, _panel_text(context), _panel_keyboard(state))
         return
 

@@ -21,21 +21,21 @@ def worker_entry(job: dict[str, Any], queue: Any) -> None:
     data_dir = Path(job["data_dir"]) if job.get("data_dir") else download_dir.parent.parent
     subtitle_lang = str(job.get("subtitle_lang") or "")
 
-    # ── Süreç grubu izolasyonu ────────────────────────────────────────────────
-    # Kendi oturumumuzu (session + process group) açıyoruz. yt-dlp bazı akışları
-    # bir ffmpeg alt sürecine devreder; grup lideri olmadan worker'ı öldürmek
-    # ffmpeg'i ÖKSÜZ bırakıyordu — ffmpeg diske yazmaya devam ediyor, bot onu
-    # göremiyor ve durduramıyordu. Grup lideri olunca ProcessManager tüm grubu
-    # tek seferde öldürebiliyor.
+    # ── Process group isolation ─────────────────────────────────────────────
+    # Start our own session (process group). yt-dlp hands some flows off to
+    # an ffmpeg child process; without being the group leader, killing the
+    # worker orphaned ffmpeg — it kept writing to disk while the bot could no
+    # longer see or stop it. As the group leader, ProcessManager can kill the
+    # whole group in one shot.
     try:
         os.setsid()
     except (OSError, AttributeError):
-        pass  # Windows / zaten grup lideri
+        pass  # Windows / already a group leader
 
     try:
         download_dir.mkdir(parents=True, exist_ok=True)
 
-        queue.put(log_event(job_id, "info", f"Worker başladı. mode={mode} pgid={os.getpgrp()}"))
+        queue.put(log_event(job_id, "info", f"Worker started. mode={mode} pgid={os.getpgrp()}"))
 
         files, title, info = download_media(
             job_id=job_id,
@@ -64,7 +64,7 @@ def worker_entry(job: dict[str, Any], queue: Any) -> None:
         ))
 
     except LiveStreamError as exc:
-        # Kullanıcıya net mesaj gitsin diye ayrı olay tipi.
+        # A separate event type so the user gets a clear message.
         queue.put(error_event(
             job_id=job_id,
             error=f"LiveStreamError: {exc}",

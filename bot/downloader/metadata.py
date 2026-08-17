@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 """
-bot/downloader/metadata.py — ses dosyalarına doğru metadata + kapak yazar.
+Writes accurate metadata and a cover image onto downloaded audio files.
 
-Neden gerekli:
-    yt-dlp'nin FFmpegExtractAudio adımı dosyaya yalnızca kodlayıcı etiketini
-    (TSSE) bırakıyordu; başlık/sanatçı/albüm/yıl hiç yazılmıyordu. Kaynakta
-    bu bilgiler MEVCUT (track, artist, artists[], album, release_year) ama
-    hiçbiri dosyaya geçmiyordu.
+Why this exists:
+    yt-dlp's FFmpegExtractAudio step only left an encoder tag (TSSE) on the
+    file; title/artist/album/year were never written, even though the source
+    info HAS them (track, artist, artists[], album, release_year).
 
-    EmbedThumbnail ise YouTube'un 16:9 video küçük resmini olduğu gibi gömüyor
-    (1280x720 PNG, ~630 KB). Müzik çalarlar kapağı kare bekler; sonuç siyah
-    bantlı, şişkin bir kapak oluyordu.
+    EmbedThumbnail embeds YouTube's 16:9 video thumbnail as-is (1280x720 PNG,
+    ~630 KB). Music players expect a square cover, so the result was a
+    bloated cover with black bars.
 
-Kurallar:
-    • UYDURMA YOK. Bir alan kaynakta yoksa boş bırakılır, tahmin edilmez.
-    • Kapak kareye ortadan kırpılır ve JPEG'e çevrilir (ffmpeg ile, ek
-      bağımlılık yok).
+Rules:
+    • NO GUESSING. A field missing from the source is left empty, never
+      invented.
+    • The cover is centre-cropped to a square and converted to JPEG (via
+      ffmpeg, no extra dependency).
 """
 
 import logging
@@ -27,20 +27,20 @@ from typing import Any
 
 logger = logging.getLogger("downloader")
 
-# Kapak boyutu: müzik çalarlar için yeterli, dosyayı şişirmeyecek kadar küçük.
+# Cover size: enough for music players, small enough not to bloat the file.
 COVER_SIZE = 800
-COVER_QUALITY = "3"  # ffmpeg -q:v (2=en iyi, 5=orta)
+COVER_QUALITY = "3"  # ffmpeg -q:v (2=best, 5=medium)
 
 
 def _clean(value: Any) -> str:
-    """Metni normalize eder; anlamsız değerleri boş sayar."""
+    """Normalizes text; treats meaningless values as empty."""
     if value is None:
         return ""
     if isinstance(value, (list, tuple)):
         parts = [_clean(v) for v in value]
         return ", ".join(p for p in parts if p)
     text = str(value).strip()
-    # yt-dlp bazen bu değerleri gerçek veri yerine koyar.
+    # yt-dlp sometimes puts these placeholders in instead of real data.
     if text.lower() in {"", "none", "null", "na", "n/a", "unknown", "nan"}:
         return ""
     return text
@@ -48,24 +48,24 @@ def _clean(value: Any) -> str:
 
 def extract_music_tags(info: dict[str, Any]) -> dict[str, str]:
     """
-    yt-dlp info dict'inden ses etiketlerini çıkarır.
+    Extracts audio tags from a yt-dlp info dict.
 
-    Yalnızca kaynakta GERÇEKTEN bulunan alanlar döner; eksik alan hiç
-    eklenmez (boş string ile doldurulmaz).
+    Only fields that ACTUALLY exist in the source are returned; a missing
+    field is never added (not even as an empty string).
     """
     if not isinstance(info, dict):
         return {}
 
     tags: dict[str, str] = {}
 
-    # ── Başlık: müzikte "track" daha doğrudur, yoksa "title" ──
+    # ── Title: "track" is more accurate for music, else "title" ──
     title = _clean(info.get("track")) or _clean(info.get("title"))
     if title:
         tags["title"] = title
 
-    # ── Sanatçı: artists[] listesi en doğru kaynak ──
-    # Sıra: artists[] → artist → creator → uploader/channel
-    # (uploader YouTube Music'te kanal = sanatçıdır; en son çare olarak kullanılır)
+    # ── Artist: the artists[] list is the most accurate source ──
+    # Order: artists[] -> artist -> creator -> uploader/channel
+    # (on YouTube Music, uploader/channel is the artist; used as a last resort)
     artist = (
         _clean(info.get("artists"))
         or _clean(info.get("artist"))
@@ -76,7 +76,7 @@ def extract_music_tags(info: dict[str, Any]) -> dict[str, str]:
     if artist:
         tags["artist"] = artist
 
-    # ── Albüm sanatçısı: varsa alan, yoksa ilk sanatçı ──
+    # ── Album artist: use the field if present, else the first artist ──
     album_artist = _clean(info.get("album_artist"))
     if not album_artist:
         artists = info.get("artists")
@@ -89,9 +89,9 @@ def extract_music_tags(info: dict[str, Any]) -> dict[str, str]:
     if album:
         tags["album"] = album
 
-    # ── Yıl: yalnızca YAYIN tarihi kullanılır ──
-    # upload_date bilinçli olarak kullanılmaz: yüklenme tarihi şarkının
-    # yayın yılı değildir, yazmak uydurma olur.
+    # ── Year: only the RELEASE date is used ──
+    # upload_date is deliberately ignored: the upload date is not the
+    # track's release year, and writing it would be a guess.
     year = ""
     release_year = info.get("release_year")
     if release_year:
@@ -121,16 +121,16 @@ def extract_music_tags(info: dict[str, Any]) -> dict[str, str]:
 
 def make_square_cover(source: Path, dest: Path, *, size: int = COVER_SIZE) -> bool:
     """
-    Küçük resmi kare kapağa çevirir (ortadan kırpma) ve JPEG yazar.
+    Converts a thumbnail into a square cover (centre crop) and writes JPEG.
 
-    YouTube küçük resmi 16:9'dur; kısa kenara göre ortadan kare kırpmak,
-    kapak sanatının merkezini korur. ffmpeg kullanılır — yeni bağımlılık yok.
+    YouTube thumbnails are 16:9; cropping to a centred square keyed off the
+    short edge keeps the artwork's centre. Uses ffmpeg — no new dependency.
     """
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg or not Path(source).exists():
         return False
 
-    # crop=min(iw,ih):min(iw,ih) → kısa kenara göre ortadan kare kırp
+    # crop=min(iw,ih):min(iw,ih) -> centred square crop off the short edge
     vf = f"crop='min(iw,ih)':'min(iw,ih)',scale={size}:{size}"
 
     try:
@@ -147,12 +147,12 @@ def make_square_cover(source: Path, dest: Path, *, size: int = COVER_SIZE) -> bo
             timeout=60,
         )
     except (subprocess.SubprocessError, OSError) as exc:
-        logger.warning("Kapak dönüştürme başarısız: %s", exc)
+        logger.warning("Cover conversion failed: %s", exc)
         return False
 
     if proc.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
         logger.warning(
-            "Kapak dönüştürme başarısız: %s",
+            "Cover conversion failed: %s",
             (proc.stderr or b"").decode("utf-8", "ignore")[:200],
         )
         return False
@@ -161,14 +161,14 @@ def make_square_cover(source: Path, dest: Path, *, size: int = COVER_SIZE) -> bo
 
 
 def _find_thumbnail(audio_path: Path) -> Path | None:
-    """yt-dlp'nin yazdığı küçük resmi ses dosyasının yanında arar."""
+    """Looks for the thumbnail yt-dlp wrote next to the audio file."""
     stem = audio_path.with_suffix("")
     for ext in (".jpg", ".jpeg", ".png", ".webp"):
         candidate = Path(str(stem) + ext)
         if candidate.exists() and candidate.stat().st_size > 0:
             return candidate
 
-    # İsim tam eşleşmiyorsa aynı klasördeki tek resmi kullan.
+    # If the name doesn't match exactly, use the single image in the folder.
     try:
         images = [
             p for p in audio_path.parent.iterdir()
@@ -191,7 +191,7 @@ def _write_mp3(path: Path, tags: dict[str, str], cover: Path | None) -> None:
     except ID3NoHeaderError:
         audio = ID3()
 
-    # Yalnızca elimizde olan alanları yaz; diğerlerine dokunma.
+    # Only write the fields we actually have; leave the rest untouched.
     frames = {
         "title": (TIT2, "title"),
         "artist": (TPE1, "artist"),
@@ -212,7 +212,7 @@ def _write_mp3(path: Path, tags: dict[str, str], cover: Path | None) -> None:
         audio.add(APIC(
             encoding=0,
             mime="image/jpeg",
-            type=3,            # 3 = kapak (ön)
+            type=3,            # 3 = front cover
             desc="Cover",
             data=cover.read_bytes(),
         ))
@@ -252,11 +252,12 @@ def _write_mp4(path: Path, tags: dict[str, str], cover: Path | None) -> None:
 
 def _write_flac(path: Path, tags: dict[str, str], cover: Path | None) -> None:
     """
-    FLAC'a Vorbis yorumları ve kapak yazar.
+    Writes Vorbis comments and a cover onto a FLAC file.
 
-    mutagen'in genel arayüzü FLAC'ta etiketleri yazıyor ama kapağı YAZMIYOR:
-    FLAC kapağı ayrı bir PICTURE bloğu, sözlüğe atanamıyor. Bu yüzden FLAC'ın
-    kendi yazıcısı var — aksi halde flac dosyaları kapaksız çıkıyordu.
+    mutagen's generic interface writes FLAC tags but NOT the cover: a FLAC
+    cover is a separate PICTURE block that can't be assigned through the
+    dict interface. Hence FLAC gets its own writer — otherwise flac files
+    came out with no cover at all.
     """
     from mutagen.flac import FLAC, Picture
 
@@ -294,10 +295,11 @@ def apply_audio_metadata(
     job_id: str = "",
 ) -> dict[str, str]:
     """
-    Ses dosyasına metadata ve kare kapak yazar.
+    Writes metadata and a square cover onto an audio file.
 
-    Dönüş: yazılan etiketler (log/doğrulama için). Hata durumunda boş dict —
-    metadata yazılamaması indirmeyi başarısız SAYMAZ, dosya yine gönderilir.
+    Returns the tags that were written (for logging/verification). An empty
+    dict on error — a metadata write failure does NOT fail the download,
+    the file is still sent.
     """
     audio_path = Path(audio_path)
     if not audio_path.exists():
@@ -306,7 +308,7 @@ def apply_audio_metadata(
     tags = extract_music_tags(info)
     suffix = audio_path.suffix.lower()
 
-    # ── Kapak hazırla ──
+    # ── Prepare the cover ──
     cover_jpg: Path | None = None
     source_thumb = _find_thumbnail(audio_path)
     if source_thumb:
@@ -322,7 +324,7 @@ def apply_audio_metadata(
         elif suffix == ".flac":
             _write_flac(audio_path, tags, cover_jpg)
         else:
-            # Diğer biçimlerde (opus/ogg/flac) mutagen'in genel arayüzü.
+            # Other formats (opus/ogg) use mutagen's generic interface.
             from mutagen import File as MutagenFile
             audio = MutagenFile(str(audio_path))
             if audio is not None:
@@ -333,10 +335,10 @@ def apply_audio_metadata(
                         pass
                 audio.save()
     except Exception as exc:
-        logger.warning("JOB %s metadata yazılamadı (%s): %s", job_id, audio_path.name, exc)
+        logger.warning("JOB %s metadata write failed (%s): %s", job_id, audio_path.name, exc)
         return {}
     finally:
-        # Geçici kapak dosyası gönderilecek dosyalar arasına karışmasın.
+        # Don't let the temporary cover file end up among the sent files.
         if cover_jpg and cover_jpg.exists():
             try:
                 cover_jpg.unlink()

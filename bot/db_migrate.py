@@ -1,18 +1,16 @@
 from __future__ import annotations
 
 """
-bot/db_migrate.py — mevcut JSON verisini SQLite'a taşır.
+One-time import of the legacy JSON data into SQLite.
 
-data/chats.json ve data/usage_stats.json içindeki geçmiş kaybolmasın diye
-bot ilk kez veritabanıyla açıldığında bir kez çalışır. JSON dosyaları
-SİLİNMEZ (geri dönüş gerekirse dursun); taşıma bir kez yapıldığında
-schema_meta'ya işaretlenir ve tekrarlanmaz.
+data/chats.json and data/usage_stats.json are read once, on the first start
+with a database. The JSON files are NOT deleted (so a rollback stays possible)
+and the import is marked in schema_meta so it never repeats.
 """
 
 import logging
 import time
 from pathlib import Path
-from typing import Any
 
 from .db import Database
 from .storage import read_json
@@ -36,9 +34,9 @@ def _mark_migrated(db: Database, summary: str) -> None:
 
 def migrate_json_to_db(db: Database, data_dir: Path) -> dict[str, int]:
     """
-    chats.json + usage_stats.json → SQLite.
+    chats.json + usage_stats.json -> SQLite.
 
-    Dönüş: {"chats": n, "platforms": n, "users": n}. Zaten taşınmışsa sıfırlar.
+    Returns {"chats": n, "platforms": n, "users": n}; zeros when already done.
     """
     if _already_migrated(db):
         return {"chats": 0, "platforms": 0, "users": 0, "skipped": 1}
@@ -91,8 +89,8 @@ def migrate_json_to_db(db: Database, data_dir: Path) -> dict[str, int]:
                     )
                     counts["platforms"] += 1
 
-            # Özel sohbetlerde chat_id == user_id: kullanıcı kaydını da kur ki
-            # duyuru hedef listesi ilk günden dolu olsun.
+            # In private chats chat_id == user_id, so the user row is created
+            # as well and the broadcast target list is populated from day one.
             if chat_type == "private" and chat_id > 0:
                 db.execute(
                     f"""INSERT OR REPLACE INTO users
@@ -103,7 +101,7 @@ def migrate_json_to_db(db: Database, data_dir: Path) -> dict[str, int]:
                 )
                 counts["users"] += 1
 
-    # ── usage_stats.json: kullanıcı id listesi ──
+    # ── usage_stats.json: user ids ──
     stats = read_json(data_dir / "usage_stats.json", {})
     if isinstance(stats, dict):
         users = stats.get("users")
@@ -125,8 +123,8 @@ def migrate_json_to_db(db: Database, data_dir: Path) -> dict[str, int]:
                 )
                 counts["users"] += 1
 
-    summary = f"{counts['chats']} sohbet, {counts['users']} kullanıcı @ {int(now)}"
+    summary = f"{counts['chats']} chats, {counts['users']} users @ {int(now)}"
     _mark_migrated(db, summary)
-    logger.info("JSON → SQLite taşıma tamamlandı: %s", summary)
+    logger.info("JSON -> SQLite import finished: %s", summary)
 
     return counts

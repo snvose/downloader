@@ -1,13 +1,8 @@
 from __future__ import annotations
 
 """
-bot/admin_notify.py — Admine hata bildirimi.
-
-Bot bir medya indirmeyi tamamlayamazsa admine:
-  - hata özeti
-  - son 20 satır log
-  - iki buton: "Safe Mode'a Geç" ve "Bakım Modunu Aç"
-gönderilir.
+Admin failure notification: a summary, the last 20 log lines and two quick
+mode-switch buttons whenever a download cannot be completed.
 """
 
 import html
@@ -23,10 +18,10 @@ logger = logging.getLogger("downloader")
 def _notify_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔇 Safe Mode'a Geç", callback_data="admin|mode|safe"),
-            InlineKeyboardButton("🛠 Bakım Modu", callback_data="admin|mode|maintenance"),
+            InlineKeyboardButton("🔇 Safe mode", callback_data="admin|mode|safe"),
+            InlineKeyboardButton("🛠 Maintenance", callback_data="admin|mode|maintenance"),
         ],
-        [InlineKeyboardButton("⚙️ Admin Paneli", callback_data="admin|panel")],
+        [InlineKeyboardButton("⚙️ Admin panel", callback_data="admin|panel")],
     ])
 
 
@@ -42,7 +37,6 @@ async def notify_admin_failure(
     chat_id: int | None = None,
     chat_title: str | None = None,
 ) -> None:
-    """Admine hata özeti + kullanıcı/sohbet bilgisi + son 20 log satırı + iki buton gönderir."""
     if not admin_id:
         return
 
@@ -61,13 +55,13 @@ async def notify_admin_failure(
         chat_line = f"id: {chat_id if chat_id is not None else '-'}"
 
     text = (
-        "<b>İndirme tamamlanamadı</b>\n\n"
-        f"<b>Kullanıcı:</b> {user_line}\n"
-        f"<b>Sohbet:</b> {chat_line}\n"
-        f"<b>Özet:</b> {html.escape(summary[:400])}\n"
+        "<b>Download failed</b>\n\n"
+        f"<b>User:</b> {user_line}\n"
+        f"<b>Chat:</b> {chat_line}\n"
+        f"<b>Summary:</b> {html.escape(summary[:400])}\n"
         f"<b>Platform:</b> {html.escape(platform or '-')}\n"
         f"<b>URL:</b> {html.escape(url[:300] or '-')}\n\n"
-        f"<b>Son 20 satır log:</b>\n<pre>{html.escape(tail)}</pre>"
+        f"<b>Last 20 log lines:</b>\n<pre>{html.escape(tail)}</pre>"
     )
 
     try:
@@ -79,5 +73,4 @@ async def notify_admin_failure(
             reply_markup=_notify_keyboard(),
         )
     except Exception:
-        # Bildirim başarısız olursa botu düşürme; sadece logla.
-        logger.exception("Admin hata bildirimi gönderilemedi.")
+        logger.exception("Could not deliver the admin failure notification.")

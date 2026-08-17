@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Telegram send/edit helpers that tolerate predictable API rejections."""
+
 import logging
 import re
 from typing import Any
@@ -29,20 +31,13 @@ def is_entity_error(exc: Exception) -> bool:
 
 
 def is_topic_closed(exc: Exception) -> bool:
-    """
-    Mesaj kapalı bir forum topic'ine gönderilmeye çalışıldı mı?
-
-    Telegram forum gruplarında bir topic kapatıldığında oraya mesaj
-    gönderilemez; reply_text çağrısı BadRequest("Topic_closed") ile
-    başarısız olur. Konu kapalı olsa bile grubun "General" başlığı
-    genellikle açıktır, oraya düşebiliriz.
-    """
+    """Was the message sent into a closed forum topic?"""
     raw = str(exc).lower()
     return "topic_closed" in raw or "topic closed" in raw
 
 
 def is_thread_missing(exc: Exception) -> bool:
-    """Topic silinmiş / bulunamıyor."""
+    """Topic deleted or not found."""
     raw = str(exc).lower()
     return (
         "message thread not found" in raw
@@ -53,14 +48,12 @@ def is_thread_missing(exc: Exception) -> bool:
 
 async def safe_reply(message: Any, text: str, **kwargs: Any):
     """
-    Yanıt gönderir; Telegram'ın öngörülebilir retlerini tolere eder.
+    Sends a reply and handles two predictable rejections:
+      • premium emoji / HTML entity error -> retry with plain text
+      • closed or deleted forum topic     -> send to the chat instead
 
-    Ele alınan durumlar:
-      • premium emoji/HTML entity hatası → sade metinle tekrar dener
-      • kapalı veya silinmiş forum topic'i → topic'siz (General) gönderir
-
-    Hiçbir yol işe yaramazsa None döner (istisna fırlatmaz); çağıran
-    tarafın akışı bir mesaj gönderilemedi diye çökmemeli.
+    Returns None when nothing could be sent; the caller must not crash just
+    because a message could not be delivered.
     """
     try:
         return await message.reply_text(text, **kwargs)
@@ -74,7 +67,6 @@ async def safe_reply(message: Any, text: str, **kwargs: Any):
                 exc = retry_exc
 
         if is_topic_closed(exc) or is_thread_missing(exc):
-            # Topic kapalı: yanıt/thread bağını bırakıp gruba (General) gönder.
             fallback = dict(kwargs)
             fallback.pop("reply_to_message_id", None)
             fallback.pop("message_thread_id", None)
@@ -85,7 +77,7 @@ async def safe_reply(message: Any, text: str, **kwargs: Any):
                     return await chat.send_message(text, **fallback)
             except Exception as fallback_exc:
                 logger.warning(
-                    "Kapalı topic sonrası gönderim de başarısız: %s", fallback_exc
+                    "Send after closed topic also failed: %s", fallback_exc
                 )
             return None
 

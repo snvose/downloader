@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 """
-Gelen medya linklerini işler: YouTube playlist tarayıcısı, YouTube format
-menüsü, YouTube Music/Spotify ses indirme ve diğer platformlar için direkt
-indirme.
+Handles incoming media links: the YouTube playlist browser, the YouTube
+format menu, YouTube Music/Spotify audio downloads, and direct downloads for
+every other platform.
 """
 
 import asyncio
@@ -39,16 +39,16 @@ _HTTP_HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
     ),
-    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
-# ─── Yardımcı: güvenli HTML kaçış ─────────────────────────────────────────────
+# ─── HTML escaping ──────────────────────────────────────────────────────────
 
 def _esc(v: object) -> str:
     return html.escape(str(v or ""))
 
 
-# ─── Platform / URL tespiti ────────────────────────────────────────────────────
+# ─── Platform / URL detection ───────────────────────────────────────────────
 
 def _is_youtube_url(url: str) -> bool:
     host = (urlparse(url).netloc or "").lower()
@@ -60,7 +60,7 @@ def _is_youtube_music_url(url: str) -> bool:
 
 
 def _is_playlist_url(url: str) -> bool:
-    """Yalnızca YouTube playlist URL'si mi?"""
+    """Is this a YouTube playlist URL (not a single video)?"""
     try:
         parsed = urlparse(url)
         host = (parsed.netloc or "").lower()
@@ -69,7 +69,7 @@ def _is_playlist_url(url: str) -> bool:
         qs = parse_qs(parsed.query)
         if "/playlist" in parsed.path.lower():
             return True
-        # list= var ama tek video değil
+        # list= is present but this isn't a single video
         return bool(qs.get("list")) and not bool(qs.get("v"))
     except Exception:
         return False
@@ -84,12 +84,12 @@ def _human_dur(secs: int | None) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-# ─── Senkron metadata çekme (executor'da çalıştırılır) ────────────────────────
+# ─── Synchronous metadata fetching (runs in an executor) ────────────────────
 
 def _sync_extract_info(url: str, cookies_file: Path | None = None) -> dict:
     """
-    İndirme yapmadan metadata çeker — process=True (track/artist/album için).
-    Birden fazla deneme: cookie'li → cookiesiz.
+    Fetches metadata without downloading (process=True, needed for
+    track/artist/album). Tries with cookies, then without.
     """
     plat = platform_name(url)
     noplaylist = plat not in {"Instagram", "TikTok", "Reddit", "Pinterest"}
@@ -104,7 +104,7 @@ def _sync_extract_info(url: str, cookies_file: Path | None = None) -> dict:
         "http_headers": _HTTP_HEADERS.copy(),
     }
 
-    attempts = [True, False]  # cookie kullan / kullanma
+    attempts = [True, False]  # with cookies / without
     last_exc: Exception | None = None
 
     for use_cookies in attempts:
@@ -116,19 +116,16 @@ def _sync_extract_info(url: str, cookies_file: Path | None = None) -> dict:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False, process=True)
             if info is None:
-                raise RuntimeError("İçerik bilgisi alınamadı.")
+                raise RuntimeError("Could not fetch content info.")
             return _compact_metadata(info, url)
         except Exception as exc:
             last_exc = exc
 
-    raise last_exc or RuntimeError("İçerik bilgisi alınamadı.")
+    raise last_exc or RuntimeError("Could not fetch content info.")
 
 
 def _sync_extract_playlist(url: str, cookies_file: Path | None = None) -> dict:
-    """
-    Playlist bilgilerini hızlıca çeker (process=False, extract_flat).
-    Ham yt-dlp info dict'ini döner.
-    """
+    """Fetches playlist info quickly (process=False, extract_flat). Returns raw yt-dlp info."""
     base_opts: dict = {
         "quiet": True,
         "no_warnings": True,
@@ -149,22 +146,21 @@ def _sync_extract_playlist(url: str, cookies_file: Path | None = None) -> dict:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False, process=False)
             if info is None:
-                raise RuntimeError("Playlist bilgisi alınamadı.")
+                raise RuntimeError("Could not fetch playlist info.")
             return info  # type: ignore[return-value]
         except Exception as exc:
             last_exc = exc
 
-    raise last_exc or RuntimeError("Playlist bilgisi alınamadı.")
+    raise last_exc or RuntimeError("Could not fetch playlist info.")
 
 
 def _compact_metadata(info: dict, url: str) -> dict:
-    """Ham yt-dlp info'yu hafif bir dict'e dönüştürür."""
+    """Turns the raw yt-dlp info dict into a small dict."""
     if not isinstance(info, dict):
         return {"platform": platform_name(url), "webpage_url": url, "title": ""}
 
     webpage_url = str(info.get("webpage_url") or info.get("original_url") or url)
 
-    # Platform tespiti — YouTube Music için ekstra kontrol
     plat = platform_name(webpage_url)
     if plat == "YouTube":
         extractor = (info.get("extractor_key") or info.get("extractor") or "").lower()
@@ -185,7 +181,7 @@ def _compact_metadata(info: dict, url: str) -> dict:
 
     return {
         "platform": plat,
-        # Canlı yayın bayrağı: metadata zaten çekildiği için ek maliyeti yok.
+        # Livestream flag: metadata is already fetched, so this is free.
         "is_live": info_is_live(info),
         "title": str(info.get("title") or info.get("fulltitle") or ""),
         "track": str(info.get("track") or ""),
@@ -208,39 +204,39 @@ def _compact_metadata(info: dict, url: str) -> dict:
 # ─── YouTube UI ───────────────────────────────────────────────────────────────
 
 def build_youtube_action_keyboard(job_id: str, view: str = "main") -> InlineKeyboardMarkup:
-    """YouTube format seçim klavyesi. view: main | video | audio"""
-    back = InlineKeyboardButton("‹ Geri", callback_data=f"menujob|{job_id}|main")
+    """YouTube format selection keyboard. view: main | video | audio"""
+    back = InlineKeyboardButton("‹ Back", callback_data=f"menujob|{job_id}|main")
 
     if view == "video":
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✨ En iyi",  callback_data=f"do|{job_id}|video_best"),
-                InlineKeyboardButton("1080p",       callback_data=f"do|{job_id}|video_1080"),
+                InlineKeyboardButton("✨ Best",  callback_data=f"do|{job_id}|video_best"),
+                InlineKeyboardButton("1080p",    callback_data=f"do|{job_id}|video_1080"),
             ],
             [
-                InlineKeyboardButton("720p",        callback_data=f"do|{job_id}|video_720"),
-                InlineKeyboardButton("480p",        callback_data=f"do|{job_id}|video_480"),
-                InlineKeyboardButton("360p",        callback_data=f"do|{job_id}|video_360"),
+                InlineKeyboardButton("720p",     callback_data=f"do|{job_id}|video_720"),
+                InlineKeyboardButton("480p",     callback_data=f"do|{job_id}|video_480"),
+                InlineKeyboardButton("360p",     callback_data=f"do|{job_id}|video_360"),
             ],
-            # Altyazı videoya gömülür (ayrı .srt dosyası gönderilmez).
-            [InlineKeyboardButton("🔤 Altyazılı (TR)", callback_data=f"do|{job_id}|video_720|tr")],
-            [InlineKeyboardButton("🔤 Altyazılı (EN)", callback_data=f"do|{job_id}|video_720|en")],
+            # Subtitles are burned into the video (no separate .srt file).
+            [InlineKeyboardButton("🔤 Subtitled (TR)", callback_data=f"do|{job_id}|video_720|tr")],
+            [InlineKeyboardButton("🔤 Subtitled (EN)", callback_data=f"do|{job_id}|video_720|en")],
             [back],
         ])
 
     if view == "audio":
         return InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✨ En iyi",  callback_data=f"do|{job_id}|audio_best"),
-                InlineKeyboardButton("320k",        callback_data=f"do|{job_id}|audio_320"),
+                InlineKeyboardButton("✨ Best", callback_data=f"do|{job_id}|audio_best"),
+                InlineKeyboardButton("320k",    callback_data=f"do|{job_id}|audio_320"),
             ],
             [
-                InlineKeyboardButton("192k",        callback_data=f"do|{job_id}|audio_192"),
-                InlineKeyboardButton("128k",        callback_data=f"do|{job_id}|audio_128"),
+                InlineKeyboardButton("192k",    callback_data=f"do|{job_id}|audio_192"),
+                InlineKeyboardButton("128k",    callback_data=f"do|{job_id}|audio_128"),
             ],
-            # FLAC kayıpsızdır ama kaynak kayıplıysa kaliteyi ARTIRMAZ, yalnızca
-            # dosyayı büyütür. Bu yüzden ayrı bir seçenek, varsayılan değil.
-            [InlineKeyboardButton("🎼 FLAC (kayıpsız)", callback_data=f"do|{job_id}|audio_flac")],
+            # FLAC is lossless but won't improve quality if the source is
+            # already lossy; it's a separate option, not the default.
+            [InlineKeyboardButton("🎼 FLAC (lossless)", callback_data=f"do|{job_id}|audio_flac")],
             [back],
         ])
 
@@ -248,14 +244,14 @@ def build_youtube_action_keyboard(job_id: str, view: str = "main") -> InlineKeyb
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎬 Video", callback_data=f"menujob|{job_id}|video"),
-            InlineKeyboardButton("🎧 Ses",   callback_data=f"menujob|{job_id}|audio"),
+            InlineKeyboardButton("🎧 Audio", callback_data=f"menujob|{job_id}|audio"),
         ],
-        [InlineKeyboardButton("🖼 Kapak",   callback_data=f"do|{job_id}|thumbnail")],
+        [InlineKeyboardButton("🖼 Thumbnail", callback_data=f"do|{job_id}|thumbnail")],
     ])
 
 
 def build_youtube_info_caption(info: dict, job_id: str) -> str:
-    """YouTube / YouTube Music bilgi ekranı metni."""
+    """YouTube / YouTube Music info screen text."""
     plat = info.get("platform", "YouTube")
 
     if plat == "YouTube Music":
@@ -284,17 +280,16 @@ def build_youtube_info_caption(info: dict, job_id: str) -> str:
         f"├ ⏱ {_esc(dur)}",
     ]
     if info.get("view_count"):
-        lines.append(f"├ 👁 {int(info['view_count']):,} izlenme".replace(",", "."))
+        lines.append(f"├ 👁 {int(info['view_count']):,} views")
     if info.get("like_count"):
-        lines.append(f"├ 👍 {int(info['like_count']):,}".replace(",", "."))
+        lines.append(f"├ 👍 {int(info['like_count']):,}")
 
-    # Kısa açıklama varsa expandable ekle
     desc = str(info.get("description") or "").strip()
     if desc:
         short = html.escape(desc[:800])
         lines.append(f"├ 📝 <blockquote expandable>{short}</blockquote>")
 
-    lines.append("└ 📥 <i>Format seçiniz</i>")
+    lines.append("└ 📥 <i>Choose a format</i>")
     return "\n".join(lines)
 
 
@@ -304,7 +299,7 @@ def _build_playlist_type_keyboard(pjob_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎬 Video", callback_data=f"pl_type|{pjob_id}|video"),
-            InlineKeyboardButton("🎵 Ses",   callback_data=f"pl_type|{pjob_id}|audio"),
+            InlineKeyboardButton("🎵 Audio", callback_data=f"pl_type|{pjob_id}|audio"),
         ],
     ])
 
@@ -334,7 +329,6 @@ def build_playlist_track_keyboard(pjob: dict, pjob_id: str, page_size: int = 8) 
             InlineKeyboardButton(chk, callback_data=f"pl_sel|{pjob_id}|{i}"),
         ])
 
-    # Sayfa navigasyonu
     nav: list[InlineKeyboardButton] = []
     if page > 0:
         nav.append(InlineKeyboardButton("◀️", callback_data=f"pl_page|{pjob_id}|{page-1}"))
@@ -343,21 +337,19 @@ def build_playlist_track_keyboard(pjob: dict, pjob_id: str, page_size: int = 8) 
         nav.append(InlineKeyboardButton("▶️", callback_data=f"pl_page|{pjob_id}|{page+1}"))
     rows.append(nav)
 
-    # İndirme satırı
     action: list[InlineKeyboardButton] = []
     if selected:
         action.append(InlineKeyboardButton(
-            f"⬇️ Seçilenleri İndir ({len(selected)})",
+            f"⬇️ Download selected ({len(selected)})",
             callback_data=f"pl_dlsel|{pjob_id}",
         ))
-    action.append(InlineKeyboardButton("⏩ Hepsini İndir", callback_data=f"pl_dlall|{pjob_id}"))
+    action.append(InlineKeyboardButton("⏩ Download all", callback_data=f"pl_dlall|{pjob_id}"))
     rows.append(action)
 
-    # Mod değiştir / iptal
-    switch_lbl = "🎬 Video'ya Geç" if mode == "audio" else "🎵 Ses'e Geç"
-    switch_typ = "video"           if mode == "audio" else "audio"
+    switch_lbl = "🎬 Switch to video" if mode == "audio" else "🎵 Switch to audio"
+    switch_typ = "video"              if mode == "audio" else "audio"
     rows.append([InlineKeyboardButton(switch_lbl, callback_data=f"pl_type|{pjob_id}|{switch_typ}")])
-    rows.append([InlineKeyboardButton("🛑 İptal",  callback_data=f"pl_cancel|{pjob_id}")])
+    rows.append([InlineKeyboardButton("🛑 Cancel", callback_data=f"pl_cancel|{pjob_id}")])
 
     return InlineKeyboardMarkup(rows)
 
@@ -373,25 +365,25 @@ def build_playlist_header(pjob: dict) -> str:
 
     lines = [f"{icon} <b>{_esc(title[:80])}</b>"]
     if upl:
-        lines.append(f"• <b>Kanal:</b> {_esc(upl[:60])}")
-    lines.append(f"• <b>Toplam:</b> {count} içerik")
+        lines.append(f"• <b>Channel:</b> {_esc(upl[:60])}")
+    lines.append(f"• <b>Total:</b> {count} items")
     if typ:
-        lines.append(f"• <b>Mod:</b> {'🎬 Video' if typ == 'video' else '🎵 Ses'}")
+        lines.append(f"• <b>Mode:</b> {'🎬 Video' if typ == 'video' else '🎵 Audio'}")
 
     sel = pjob.get("selected", set())
     if sel:
-        lines.append(f"✔️ <i>{len(sel)} seçili</i>")
+        lines.append(f"✔️ <i>{len(sel)} selected</i>")
 
     page  = pjob.get("page", 0)
     pages = max(1, (len(pjob["entries"]) + 8 - 1) // 8)
-    lines.append(f"<code>Sayfa {page+1}/{pages}</code>")
+    lines.append(f"<code>Page {page+1}/{pages}</code>")
     return "\n".join(lines)
 
 
-# ─── Pending job yardımcıları ─────────────────────────────────────────────────
+# ─── Pending job helpers ────────────────────────────────────────────────────
 
 def _get_user_pending_job(bot_data: dict, user_id: int) -> tuple[str, dict] | tuple[None, None]:
-    """Kullanıcının format seçim menüsünde bekleyen işini döner (job_id, job) ya da (None, None)."""
+    """The user's pending format-selection job, or (None, None)."""
     for jid, job in bot_data.get("pending_jobs", {}).items():
         if job.get("user_id") == user_id:
             return jid, job
@@ -399,7 +391,7 @@ def _get_user_pending_job(bot_data: dict, user_id: int) -> tuple[str, dict] | tu
 
 
 def _cancel_user_pending(bot_data: dict, user_id: int) -> dict | None:
-    """Kullanıcının bekleyen işini iptal eder ve döner (mesaj silmek için)."""
+    """Cancels the user's pending job and returns it (to delete its message)."""
     jid, job = _get_user_pending_job(bot_data, user_id)
     if jid:
         bot_data["pending_jobs"].pop(jid, None)
@@ -414,7 +406,7 @@ def _get_user_playlist_session(bot_data: dict, user_id: int) -> tuple[str, dict]
     return None, None
 
 
-# ─── Akış yardımcıları ────────────────────────────────────────────────────────
+# ─── Flow helpers ─────────────────────────────────────────────────────────────
 
 async def _show_youtube_preview(
     *,
@@ -424,9 +416,8 @@ async def _show_youtube_preview(
     info: dict,
 ) -> None:
     """
-    YouTube bilgi ekranını gönderir:
-    Önce thumbnail fotoğrafı dener (daha zengin görünüm),
-    başarısız olursa wait_msg'i text olarak düzenler.
+    Sends the YouTube info screen: tries the thumbnail photo first (richer
+    look), falls back to editing wait_msg as text.
     """
     caption  = build_youtube_info_caption(info, job_id)
     keyboard = build_youtube_action_keyboard(job_id, view="main")
@@ -443,14 +434,13 @@ async def _show_youtube_preview(
                 reply_to_message_id=wait_msg.reply_to_message.message_id
                     if wait_msg.reply_to_message else None,
             )
-            # Eski "analiz ediliyor" mesajını sil
             try:
                 await wait_msg.delete()
             except Exception:
                 pass
             return sent
         except Exception:
-            pass  # Thumbnail çalışmadı, text fallback
+            pass  # thumbnail failed, fall back to text
 
     await safe_message_edit(
         wait_msg,
@@ -468,8 +458,8 @@ async def _run_playlist_download(
     indices: list[int],
     status_msg,
 ) -> None:
-    """Playlist'teki seçili parçaları sırayla indirir. Dosyalar her item için
-    queue_consumer tarafından gönderilir."""
+    """Downloads the selected playlist tracks in order; queue_consumer sends
+    each item's files as it finishes."""
     bot_data = context.application.bot_data
     pjob     = bot_data.get("playlist_sessions", {}).get(pjob_id)
     if not pjob:
@@ -482,9 +472,9 @@ async def _run_playlist_download(
     failed: list[str] = []
     loop = asyncio.get_running_loop()
 
-    # Playlist indirmesi sırasında kullanıcı yeni iş başlatmasın
-    # process_manager'a kayıt etmiyoruz (playlist kendi sıralamasını yönetir),
-    # bunun yerine playlist_sessions'a "downloading" flag koyuyoruz.
+    # The playlist download is not registered per-item with process_manager
+    # (the playlist manages its own ordering); the "downloading" flag on
+    # playlist_sessions serves the same purpose.
     pjob["downloading"] = True
 
     for num, idx in enumerate(indices, start=1):
@@ -500,19 +490,18 @@ async def _run_playlist_download(
         etitle = str(entry.get("title") or entry.get("id") or f"#{idx+1}")[:60]
 
         if not eurl:
-            failed.append(f"{idx+1}. URL yok")
+            failed.append(f"{idx+1}. no URL")
             continue
 
         try:
             await safe_message_edit(
                 status_msg,
-                f"⬇️ <b>{num}/{total}</b> indiriliyor...\n<i>{_esc(etitle)}</i>",
+                f"⬇️ <b>{num}/{total}</b> downloading...\n<i>{_esc(etitle)}</i>",
                 parse_mode="HTML",
             )
         except Exception:
             pass
 
-        # Metadata çek
         try:
             einfo = await loop.run_in_executor(
                 None, _sync_extract_info, eurl, config.cookies_file
@@ -520,7 +509,6 @@ async def _run_playlist_download(
         except Exception:
             einfo = {"platform": pjob["platform"], "title": etitle, "webpage_url": eurl, "description": ""}
 
-        # İndir
         try:
             job = manager.start_download(
                 user_id=pjob["user_id"],
@@ -530,25 +518,23 @@ async def _run_playlist_download(
                 url=eurl,
                 mode=mode_dl,
             )
-            # NOT: Paylaşılan status mesajını item job'una attach ETMİYORUZ.
-            # queue_consumer iş bitince status_message_id'yi siler; bu da
-            # playlist'in ortak ilerleme mesajını yok ederdi. Dosyalar yine
-            # queue_consumer tarafından gönderilir, sadece silme tetiklenmez.
+            # NOTE: the shared status message is NOT attached to the item's
+            # job. queue_consumer deletes status_message_id on completion,
+            # which would destroy the playlist's shared progress message.
+            # Files are still sent by queue_consumer; only the delete is skipped.
 
-            # Process tamamlanana dek bekle
             while True:
                 await asyncio.sleep(0.5)
                 current = manager.jobs.get(job.job_id)
                 if not current or current.done or current.cancelled:
                     break
 
-            # Dosyaları al (process zaten upload yaptı, bu blok sadece hata kontrolü)
             if current and current.cancelled:
-                failed.append(f"{idx+1}. {etitle}: iptal edildi")
+                failed.append(f"{idx+1}. {etitle}: cancelled")
 
         except Exception as exc:
             failed.append(f"{idx+1}. {_esc(etitle)}: {str(exc)[:80]}")
-            logger.warning("Playlist item hatası idx=%d: %s", idx, exc)
+            logger.warning("Playlist item error idx=%d: %s", idx, exc)
 
     pjob["downloading"] = False
     bot_data.get("playlist_sessions", {}).pop(pjob_id, None)
@@ -558,8 +544,8 @@ async def _run_playlist_download(
         try:
             await safe_message_edit(
                 status_msg,
-                f"✅ Tamamlandı ({total - len(failed)}/{total})\n\n"
-                f"❌ Başarısız:\n{_esc(fail_lines)}",
+                f"✅ Done ({total - len(failed)}/{total})\n\n"
+                f"❌ Failed:\n{_esc(fail_lines)}",
                 parse_mode="HTML",
             )
         except Exception:
@@ -571,13 +557,13 @@ async def _run_playlist_download(
             pass
 
 
-# ─── Ana handler ──────────────────────────────────────────────────────────────
+# ─── Main handler ─────────────────────────────────────────────────────────────
 
 async def _reject_live(context, *, user, wait_msg, is_admin: bool) -> None:
     """
-    Canlı yayın reddini kullanıcıya bildirir ve denemeyi kaydeder.
+    Tells the user a livestream link was rejected and records the attempt.
 
-    1./2. deneme → uyarı, 3. deneme → geçici ban. Admin sayaca dahil değildir.
+    Attempts 1 and 2 warn, attempt 3 bans temporarily. Admins are exempt.
     """
     guard = context.application.bot_data.get("live_guard")
     text = t("live_not_supported")
@@ -588,7 +574,7 @@ async def _reject_live(context, *, user, wait_msg, is_admin: bool) -> None:
         )
         text = guard_message(result)
 
-    logger.warning("Canlı yayın reddedildi | user=%s", user.id)
+    logger.warning("Livestream rejected | user=%s", user.id)
 
     await safe_message_edit(
         wait_msg,
@@ -608,22 +594,21 @@ async def _try_serve_from_cache(
     silent: bool,
 ) -> bool:
     """
-    Aynı link daha önce indirilmişse yeniden indirme yapmadan iletir.
-    Dönüş True ise istek cache'den karşılandı (yeni indirme gereksiz).
+    Serves a link already downloaded before without a fresh download.
+    Returns True when the request was served from cache.
     """
     bot_data = context.application.bot_data
     cache = bot_data.get("media_cache")
     if not cache:
         return False
 
-    # Blocking JSON okuması → thread
     record = await asyncio.get_running_loop().run_in_executor(
         None, cache.resolve_sendable, url, mode
     )
     if not record:
         return False
 
-    from bot.sender import send_from_cache  # geç import (döngüsel bağımlılık)
+    from bot.sender import send_from_cache  # late import: avoids a circular dependency
 
     try:
         result_items = await send_from_cache(
@@ -636,15 +621,14 @@ async def _try_serve_from_cache(
             bare=silent,
         )
     except Exception as exc:
-        logger.warning("Cache'den gönderim başarısız, normal indirmeye düşülüyor: %s", exc)
+        logger.warning("Cache send failed, falling back to a normal download: %s", exc)
         return False
 
-    # file_id güncelle (disk→yükle senaryosunda yeni file_id'ler oluşur)
+    # Refresh file_ids (a disk -> re-upload path produces new ones).
     await asyncio.get_running_loop().run_in_executor(
         None, cache.update_file_ids, url, mode, result_items
     )
 
-    # Kullanım kaydını güncelle
     registry = bot_data.get("chat_registry")
     if registry:
         await asyncio.get_running_loop().run_in_executor(
@@ -667,7 +651,7 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     message = update.message
     chat    = update.effective_chat
 
-    # ── İzin kontrolü (rate limit dahil) ──────────────────────────────────────
+    # ── Permission check (includes ban state) ─────────────────────────────────
     permissions = context.application.bot_data["permissions"]
     check = permissions.check_update(update)
     if not check.allowed:
@@ -675,17 +659,16 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await safe_reply(message, check.reason)
         return
 
-    # ── URL çıkar ─────────────────────────────────────────────────────────────
+    # ── Extract URL ─────────────────────────────────────────────────────────
     raw = message.text or message.caption or ""
     url = normalize_url(extract_first_url(raw) or "")
     if not url or not is_supported_url(url):
         return
 
-    # ── Kullanıcı/sohbet kaydı (duyuru listesi + istatistik) ──────────────────
-    # Desteklenen bir link gönderen herkes kaydedilir; indirme başarısız olsa
-    # bile kullanıcı bilinir hale gelir (Faz 3 duyuru hedefi).
-    # Yazma tamponu: her mesajda diske yazmak yerine bellekte biriktirilip
-    # periyodik olarak tek transaction'da yazılır (bkz. bot/analytics.py).
+    # ── User/chat record (broadcast list + stats) ──────────────────────────
+    # Anyone sending a supported link is recorded, even if the download later
+    # fails, so they become a known broadcast target. Writes are buffered
+    # instead of hitting disk on every message (see bot/analytics.py).
     activity = context.application.bot_data.get("activity_buffer")
     if activity:
         try:
@@ -701,11 +684,11 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 chat_type=chat.type,
             )
         except Exception:
-            logger.exception("Aktivite kaydı başarısız")
+            logger.exception("Activity record failed")
 
-    # ── Geçici ban (canlı yayın spamı) ────────────────────────────────────────
-    # İzin kontrolünden sonra, iş başlatılmadan önce. Süresi dolan ban
-    # ban_remaining() içinde kendiliğinden kalkar.
+    # ── Temporary ban (livestream spam) ─────────────────────────────────────
+    # After the permission check, before a job is started. A ban that expired
+    # lifts itself inside ban_remaining().
     live_guard = context.application.bot_data.get("live_guard")
     is_admin = permissions.is_admin(user.id)
 
@@ -729,18 +712,17 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     loop     = asyncio.get_running_loop()
     state    = bot_data["bot_state"]
 
-    # ── Bakım modu: hiçbir indirme yapılmaz, sabit mesaj döner ─────────────────
-    # Admin için bakım modu uygulanmaz (admin test edebilsin).
+    # ── Maintenance mode: no downloads, a fixed message instead ────────────
     if state.is_maintenance() and not permissions.is_admin(user.id):
         await safe_reply(message, t("maintenance"), reply_to_message_id=message.message_id)
         return
 
-    # ── Safe mode: sessiz çalışma. Kullanıcıya mesaj/yazıyor/emoji yok ─────────
+    # ── Safe mode: silent operation, no status/typing/emoji for the user ───
     silent = state.is_safe()
 
-    # ── Cache: aynı link daha önce indirildiyse yeniden indirme ────────────────
-    # Doğrudan akışlar (TikTok/Instagram/Spotify/YT Music vb.) cache'den karşılanır.
-    # YouTube format menüsü interaktif seçim gerektirdiği için cache'lenmez.
+    # ── Cache: serve an already-downloaded link without downloading again ──
+    # Direct flows (TikTok/Instagram/Spotify/YT Music, etc.) can be served
+    # from cache. The interactive YouTube format menu is never cached.
     if not _is_youtube_url(url) or _is_youtube_music_url(url):
         cache_mode = "audio_best" if (is_spotify_url(url) or _is_youtube_music_url(url)) else "auto"
         if not manager.get_user_active_job(user.id):
@@ -751,10 +733,10 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             if served:
                 return
 
-    # ── Safe mode akışı: sessizce indir, yalnızca medyayı yanıt olarak ilet ────
+    # ── Safe mode flow: download silently, reply with the media only ───────
     if silent:
         if manager.get_user_active_job(user.id):
-            return  # safe modda bekleme bildirimi bile gönderilmez
+            return  # safe mode sends no "please wait" notice either
         safe_mode_dl = "audio_best" if (is_spotify_url(url) or _is_youtube_music_url(url)) else "auto"
         try:
             manager.start_download(
@@ -769,17 +751,12 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 chat_title=getattr(chat, "title", None),
                 chat_type=chat.type,
             )
-            # status mesajı YOK — safe mode tamamen sessiz
+            # No status message — safe mode is completely silent.
         except Exception:
-            logger.exception("Safe mode indirme başlatılamadı | url=%s", url)
+            logger.exception("Safe mode download failed to start | url=%s", url)
         return
 
-    # ── Platform notu ──────────────────────────────────────────────────────────
-    # Facebook sosyal platform olarak indirilir.
-    # Spotify: yt-dlp doğrudan indiremez; worker şarkıyı YouTube'da bulup ses
-    # olarak indirir (aşağıda Spotify dalında ele alınır).
-
-    # ── Aktif process işi kontrolü ────────────────────────────────────────────
+    # ── Active job check ─────────────────────────────────────────────────────
     if manager.get_user_active_job(user.id):
         await safe_reply(
             message,
@@ -788,12 +765,12 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    # ── Bekleyen format menüsü iptal et (yeni link geldi) ─────────────────────
-    # Eski menü mesajı SİLİNİR; önceden yalnızca butonları kaldırılıyor ve
-    # mesaj sohbette kalıntı olarak duruyordu.
+    # ── Cancel a pending format menu (a new link arrived) ────────────────────
+    # The old menu message is DELETED; it used to only lose its buttons and
+    # linger in the chat as clutter.
     await clear_user_pending(context.application, user.id)
 
-    # ── "Analiz ediliyor" mesajı ───────────────────────────────────────────────
+    # ── "Analyzing" message ──────────────────────────────────────────────────
     wait_msg = await safe_reply(
         message,
         analyzing_text(url),
@@ -807,7 +784,7 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     plat = platform_name(url)
 
     try:
-        # ── 0. Spotify → şarkıyı YouTube üzerinden ses olarak indir ─────────────
+        # ── 0. Spotify -> resolve the track on YouTube, download as audio ────
         if is_spotify_url(url):
             if "/track/" not in (url.lower()):
                 await safe_message_edit(
@@ -832,15 +809,15 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 manager.attach_status_message(job.job_id, wait_msg.message_id)
                 await safe_message_edit(
                     wait_msg,
-                    f"{em('icon_spotify')} <i>Spotify şarkısı hazırlanıyor...</i>",
+                    f"{em('icon_spotify')} <i>Preparing Spotify track...</i>",
                     parse_mode="HTML",
                     disable_web_page_preview=True,
                 )
-            except Exception as exc:
+            except Exception:
                 await safe_message_edit(wait_msg, t("job_start_failed"))
             return
 
-        # ── 1. YouTube Playlist ────────────────────────────────────────────────
+        # ── 1. YouTube playlist ──────────────────────────────────────────────
         if _is_playlist_url(url) and plat in {"YouTube", "YouTube Music"}:
             if chat.type in {"group", "supergroup"}:
                 try:
@@ -850,14 +827,13 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     bot_url = "https://t.me"
                 await safe_message_edit(
                     wait_msg,
-                    "Playlist indirme gruplarda kapalı. Playlist için botla özelden sohbet aç.",
+                    "Playlist downloads are disabled in groups. Open a private chat with the bot for playlists.",
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Botu özelden aç", url=bot_url)]
+                        [InlineKeyboardButton("Open in private chat", url=bot_url)]
                     ]),
                 )
                 return
 
-            # Playlist metadata çek
             try:
                 raw_info = await loop.run_in_executor(
                     None, _sync_extract_playlist, url, config.cookies_file
@@ -865,31 +841,31 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             except Exception as exc:
                 await safe_message_edit(
                     wait_msg,
-                    f"❌ Playlist bilgisi alınamadı: {_esc(str(exc)[:200])}",
+                    f"❌ Could not fetch playlist info: {_esc(str(exc)[:200])}",
                     parse_mode="HTML",
                 )
                 return
 
             entries = [e for e in (raw_info.get("entries") or []) if isinstance(e, dict)]
 
-            # Playlist içindeki canlı yayınlar ayıklanır — tek bir canlı girdi
-            # tüm playlist indirmesini süresiz askıda bırakırdı.
+            # Livestreams inside the playlist are dropped — a single live
+            # entry would stall the whole playlist download indefinitely.
             live_count = sum(1 for e in entries if info_is_live(e))
             if live_count:
                 entries = [e for e in entries if not info_is_live(e)]
-                logger.info("Playlist'ten %d canlı yayın ayıklandı", live_count)
+                logger.info("Dropped %d livestream entries from the playlist", live_count)
 
             if not entries:
                 await safe_message_edit(
                     wait_msg,
                     t("live_not_supported") if live_count
-                    else "❌ Bu playlist boş veya erişime kapalı.",
+                    else "❌ This playlist is empty or not accessible.",
                     parse_mode="HTML" if live_count else None,
                 )
                 return
 
             pjob_id = uuid.uuid4().hex[:12]
-            # YouTube Music playlist → otomatik ses modu
+            # YouTube Music playlist -> audio mode automatically
             auto_type = "audio" if plat == "YouTube Music" else None
 
             pjob = {
@@ -928,14 +904,15 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         # ── 2 & 3. YouTube / YouTube Music ────────────────────────────────────
         if _is_youtube_url(url):
-            # Önce hızlı canlı yayın sorgusu (extract_flat, ~1.5 sn), sonra tam
-            # metadata. Paralel denendi ama YouTube eşzamanlı iki isteği
-            # yavaşlattığı için sıralı akış hem daha hızlı reddediyor hem de
-            # canlı yayında pahalı metadata çekimini tamamen atlıyor.
-            # Cookie BİLEREK kullanılmıyor: canlı yayın bilgisi herkese açık ve
-            # cookie'li sorgu ölçümde 2 kat yavaş (3.6 sn vs 1.5 sn). Sorgu
-            # başarısız olursa (yaş kısıtlı/özel içerik) False döner ve akış
-            # normal devam eder — worker tarafındaki cookie'li kontrol yakalar.
+            # A quick livestream check (extract_flat, ~1.5s) runs before the
+            # full metadata fetch. Sequential is faster overall than parallel
+            # here: YouTube throttles two concurrent requests, and a live hit
+            # skips the expensive metadata fetch entirely.
+            # Cookies are deliberately NOT used for this probe: live status is
+            # public and a cookie-authenticated query measured 2x slower
+            # (3.6s vs 1.5s). A failed probe (age-restricted/private) returns
+            # False and the normal flow continues; the worker's cookie-backed
+            # check catches it later.
             try:
                 probe_live, _probe_info = await loop.run_in_executor(
                     None, probe_is_live, url
@@ -954,7 +931,6 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     None, _sync_extract_info, url, config.cookies_file
                 )
             except Exception:
-                # Metadata alınamazsa platforma göre fallback yap
                 info = {
                     "platform": plat,
                     "title": "",
@@ -965,10 +941,10 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     "thumbnail": None,
                 }
 
-            # ── Canlı yayın: indirmeyi hiç başlatma ────────────────────────────
-            # Metadata yukarıda zaten çekildi; bu kontrol ek gecikme getirmez.
-            # Canlı yayın sonsuz akar, iş slotunu süresiz doldurur ve diski
-            # doldurana kadar büyür — o yüzden burada kesiliyor.
+            # ── Livestream: never start the download ──────────────────────────
+            # Metadata was already fetched above, so this check is free. A
+            # livestream never ends, which would fill a job slot and the disk
+            # forever if allowed through.
             if info.get("is_live"):
                 await _reject_live(
                     context, user=user, wait_msg=wait_msg, is_admin=is_admin
@@ -977,15 +953,14 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
             detected_plat = info.get("platform", plat)
 
-            # ── YouTube Music → otomatik ses indirme ──────────────────────────
+            # ── YouTube Music -> automatic audio download ──────────────────────
             if detected_plat == "YouTube Music" or _is_youtube_music_url(url):
                 info["platform"] = "YouTube Music"
-                # Kısa bilgi mesajı göster
                 yt_music_text = build_youtube_info_caption(info, "")
                 try:
                     await safe_message_edit(
                         wait_msg,
-                        yt_music_text + "\n\n⏳ <i>Ses hazırlanıyor...</i>",
+                        yt_music_text + "\n\n⏳ <i>Preparing audio...</i>",
                         parse_mode="HTML",
                         disable_web_page_preview=True,
                     )
@@ -1005,11 +980,11 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                         chat_type=chat.type,
                     )
                     manager.attach_status_message(job.job_id, wait_msg.message_id)
-                except Exception as exc:
+                except Exception:
                     await safe_message_edit(wait_msg, t("job_start_failed"))
                 return
 
-            # ── YouTube → format seçim menüsü ─────────────────────────────────
+            # ── YouTube -> format selection menu ──────────────────────────────
             job_id = uuid.uuid4().hex[:12]
 
             sent_msg = await _show_youtube_preview(
@@ -1019,7 +994,6 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 info=info,
             )
 
-            # Pending job kaydet
             status_message_id = (
                 sent_msg.message_id if sent_msg else wait_msg.message_id
             )
@@ -1033,14 +1007,13 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "reply_to": message.message_id,
                 "created_at": time.time(),
                 "status_message_id": status_message_id,
-                # Detaylı loglama + chat kaydı için kullanıcı bağlamı
                 "username": user.username,
                 "chat_title": getattr(chat, "title", None),
                 "chat_type": chat.type,
             }
             return
 
-        # ── 4. Diğer platformlar → direkt indirme ─────────────────────────────
+        # ── 4. Every other platform -> direct download ────────────────────────
         try:
             job = manager.start_download(
                 user_id=user.id,
@@ -1061,15 +1034,15 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 parse_mode="HTML",
                 disable_web_page_preview=True,
             )
-        except Exception as exc:
+        except Exception:
             await safe_message_edit(wait_msg, t("job_start_failed"))
 
     except Exception:
-        logger.exception("link_handler genel hata | user=%s url=%s", user.id, url)
+        logger.exception("link_handler unexpected error | user=%s url=%s", user.id, url)
         try:
             await safe_message_edit(
                 wait_msg,
-                "❌ Beklenmeyen bir hata oluştu. Link bozuk, gizli veya geçici erişim sorunu olabilir.",
+                t("err_unexpected"),
             )
         except Exception:
             pass

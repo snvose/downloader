@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 """
-bot/chats.py — Bot kullanım takibi / admin paneli verisi.
+Chat usage registry.
 
-Botun kullanıldığı tüm sohbet ve gruplar data/chats.json içinde KALICI tutulur.
-Her kayıt: chat id, başlık, tür, toplam indirme sayısı, son aktivite zamanı.
-Her BAŞARILI indirmede record_download() ile güncellenir.
+Every chat the bot is used in is stored in data/chats.json: chat id, title,
+type, total downloads and last activity. Updated on each successful download.
 """
 
 import time
@@ -36,7 +35,6 @@ class ChatRegistry:
         chat_type: str,
         platform: str = "",
     ) -> None:
-        """Başarılı indirme sonrası sohbet kaydını oluşturur/günceller."""
         data = self._load()
         chats = data["chats"]
         key = str(chat_id)
@@ -63,7 +61,7 @@ class ChatRegistry:
         self._save(data)
 
     def all_chats(self) -> list[dict]:
-        """Son aktiviteye göre azalan sırada tüm sohbetleri döner."""
+        """All chats, most recently active first."""
         chats = list(self._load()["chats"].values())
         chats.sort(key=lambda c: c.get("last_activity", 0), reverse=True)
         return chats

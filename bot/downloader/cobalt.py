@@ -1,25 +1,25 @@
 from __future__ import annotations
 
 """
-bot/downloader/cobalt.py — cobalt API istemcisi.
+cobalt API client.
 
-cobalt (https://github.com/imputnet/cobalt) bir medya indirme servisidir.
-Bazı platformlarda (TikTok, Instagram, Twitter/X, Reddit) yt-dlp'den daha
-hızlı ve stabil sonuç verir; çünkü sunucu tarafında hazır çözümleme yapar.
+cobalt (https://github.com/imputnet/cobalt) is a media download service. On
+some platforms (TikTok, Instagram, Twitter/X, Reddit) it's faster and more
+stable than yt-dlp because the resolving happens server-side.
 
-ÖNEMLİ — herkese açık API yok:
-    cobalt'ın resmî ortak API'si kapalıdır ("there is currently no publicly
-    available pre-hosted api"). Kullanmak için kendi instance'ını çalıştırman
-    gerekir (docker compose). COBALT_API_URL tanımlı değilse bu kaynak
-    otomatik olarak devre dışı kalır ve pipeline yt-dlp ile devam eder.
+IMPORTANT — no public API:
+    cobalt has no official shared API ("there is currently no publicly
+    available pre-hosted api"). You must run your own instance (docker
+    compose). If COBALT_API_URL is empty, this source is automatically
+    disabled and the pipeline continues with yt-dlp.
 
-LİSANS — AGPL-3.0:
-    Bu dosya cobalt KAYNAK KODUNU İÇERMEZ; yalnızca HTTP API'sine istek atar.
-    Ağ üzerinden ayrı bir servisle konuşmak türev eser oluşturmaz, dolayısıyla
-    bu botun kendi lisansı AGPL'e tabi olmaz. ANCAK cobalt instance'ını sen
-    barındırıp kullanıcılara hizmet olarak sunuyorsan, AGPL-3.0 §13 gereği
-    cobalt'ın (yaptığın değişiklikler dahil) kaynak kodunu o kullanıcılara
-    sunmakla yükümlüsün. Ayrıntı: docs/COBALT.md
+LICENSE — AGPL-3.0:
+    This file does NOT contain cobalt's source code; it only makes HTTP
+    requests to its API. Talking to a separate service over the network does
+    not create a derivative work, so this bot's own license is not bound by
+    AGPL. HOWEVER, if you host a cobalt instance yourself and offer it as a
+    service to users, AGPL-3.0 §13 requires you to make cobalt's source code
+    (including your changes) available to those users. Details: docs/COBALT.md
 """
 
 import json
@@ -33,9 +33,9 @@ from urllib.parse import urlparse
 import requests
 
 
-# cobalt'ın desteklediği servisler (api/README.md, sürüm 11).
-# Pipeline önceliği bu listeye göre filtrelenir: desteklenmeyen bir platform
-# için cobalt'a hiç istek atılmaz.
+# Services cobalt supports (api/README.md, version 11).
+# The pipeline priority is filtered against this list, so an unsupported
+# platform is never sent to cobalt at all.
 SUPPORTED_SERVICES = {
     "bilibili", "bluesky", "dailymotion", "facebook", "instagram", "loom",
     "newgrounds", "ok", "pinterest", "reddit", "rutube", "snapchat",
@@ -43,7 +43,7 @@ SUPPORTED_SERVICES = {
     "vimeo", "vk", "youtube",
 }
 
-# Bot platform adı → cobalt servis adı
+# Bot platform name -> cobalt service name
 PLATFORM_TO_SERVICE = {
     "YouTube": "youtube",
     "YouTube Music": "youtube",
@@ -73,11 +73,11 @@ _FILENAME_SAFE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
 class CobaltError(RuntimeError):
-    """cobalt isteği başarısız oldu (bir sonraki kaynağa geçilir)."""
+    """The cobalt request failed (the pipeline moves to the next source)."""
 
 
 class CobaltUnavailable(CobaltError):
-    """Instance tanımsız/erişilemez — yapılandırma sorunu, içerik sorunu değil."""
+    """Instance not configured/unreachable — a config issue, not a content one."""
 
 
 def platform_supported(platform: str) -> bool:
@@ -87,7 +87,7 @@ def platform_supported(platform: str) -> bool:
 
 def _safe_filename(name: str, fallback: str = "cobalt-media") -> str:
     name = _FILENAME_SAFE.sub("_", (name or "").strip()) or fallback
-    # Aşırı uzun isimler dosya sistemini zorlar (255 bayt sınırı).
+    # Overly long names break the filesystem (255-byte limit).
     if len(name.encode("utf-8")) > 200:
         stem, dot, ext = name.rpartition(".")
         stem = stem.encode("utf-8")[:180].decode("utf-8", errors="ignore")
@@ -97,9 +97,9 @@ def _safe_filename(name: str, fallback: str = "cobalt-media") -> str:
 
 class CobaltClient:
     """
-    Tek bir cobalt instance'ı ile konuşan basit istemci.
+    A simple client that talks to a single cobalt instance.
 
-    Kullanım:
+    Usage:
         client = CobaltClient(api_url="http://127.0.0.1:9000")
         files, info = client.download(url=..., download_dir=..., mode="auto")
     """
@@ -125,7 +125,7 @@ class CobaltClient:
     def enabled(self) -> bool:
         return bool(self.api_url)
 
-    # ── HTTP ──────────────────────────────────────────────────────────────────
+    # ── HTTP ─────────────────────────────────────────────────────────────────
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -134,8 +134,8 @@ class CobaltClient:
             "User-Agent": self.user_agent,
         }
         if self.api_key:
-            # cobalt iki şema kabul eder: "Api-Key <uuid>" ve "Bearer <jwt>".
-            # Kullanıcı tam başlığı yazdıysa olduğu gibi kullan.
+            # cobalt accepts two schemes: "Api-Key <uuid>" and "Bearer <jwt>".
+            # If the user already wrote the full header, use it as-is.
             if self.api_key.lower().startswith(("api-key ", "bearer ")):
                 headers["Authorization"] = self.api_key
             else:
@@ -143,13 +143,13 @@ class CobaltClient:
         return headers
 
     def _build_payload(self, url: str, mode: str, *, subtitle_lang: str = "") -> dict[str, Any]:
-        """Bot modunu (video_720, audio_320, auto...) cobalt parametrelerine çevirir."""
+        """Translates the bot's mode (video_720, audio_320, auto...) into cobalt params."""
         payload: dict[str, Any] = {
             "url": url,
             "filenameStyle": "basic",
-            # Sunucu birleştirme/dönüştürmeyi kendi yapsın; biz tek bir hazır
-            # dosya indirelim. "disabled" olmazsa local-processing yanıtı gelir
-            # ve ffmpeg işini bize bırakır.
+            # Let the server do the merging/converting and hand us one ready
+            # file. Without "disabled" we'd get a local-processing response
+            # and have to run ffmpeg ourselves.
             "localProcessing": "disabled",
         }
 
@@ -160,7 +160,7 @@ class CobaltClient:
                 "audio_320": "320", "audio_best": "320",
                 "audio_192": "128", "audio_mp3": "128", "audio_128": "128",
             }.get(mode, "320")
-            # cobalt yalnızca 320/256/128/96/64/8 kabul eder.
+            # cobalt only accepts 320/256/128/96/64/8.
             payload["audioBitrate"] = bitrate
             payload["tiktokFullAudio"] = True
         else:
@@ -178,15 +178,15 @@ class CobaltClient:
         return payload
 
     def request(self, url: str, mode: str = "auto", *, subtitle_lang: str = "") -> dict[str, Any]:
-        """cobalt'a POST atar ve ham JSON yanıtı döner."""
+        """POSTs to cobalt and returns the raw JSON response."""
         if not self.enabled:
-            raise CobaltUnavailable("cobalt instance adresi tanımlı değil (COBALT_API_URL).")
+            raise CobaltUnavailable("No cobalt instance address configured (COBALT_API_URL).")
 
-        # cobalt'ın audioFormat listesinde flac YOK. İstek yine de gönderilse
-        # sessizce mp3 dönerdi; kullanıcı FLAC istemişken mp3 almak, hiç
-        # almamaktan daha kötü. Bu modda sıradaki kaynağa (yt-dlp) devredilir.
+        # cobalt's audioFormat list has no flac. A request would still
+        # silently return mp3, and handing the user mp3 when they asked for
+        # FLAC is worse than not trying at all — this mode defers to yt-dlp.
         if mode == "audio_flac":
-            raise CobaltUnavailable("cobalt FLAC üretemiyor — yt-dlp'ye devrediliyor.")
+            raise CobaltUnavailable("cobalt cannot produce FLAC — deferring to yt-dlp.")
 
         payload = self._build_payload(url, mode, subtitle_lang=subtitle_lang)
 
@@ -198,34 +198,34 @@ class CobaltClient:
                 timeout=self.timeout,
             )
         except requests.RequestException as exc:
-            raise CobaltUnavailable(f"cobalt'a bağlanılamadı: {exc}") from exc
+            raise CobaltUnavailable(f"Could not connect to cobalt: {exc}") from exc
 
         try:
             data = resp.json()
         except ValueError:
             raise CobaltError(
-                f"cobalt geçersiz yanıt verdi (HTTP {resp.status_code}): {resp.text[:200]}"
+                f"cobalt returned an invalid response (HTTP {resp.status_code}): {resp.text[:200]}"
             )
 
         if not isinstance(data, dict):
-            raise CobaltError("cobalt beklenmeyen yanıt biçimi döndü.")
+            raise CobaltError("cobalt returned an unexpected response shape.")
 
         status = data.get("status")
 
         if status == "error":
             err = data.get("error") or {}
-            code = str(err.get("code") or "bilinmeyen")
-            # Kimlik/oran sınırı hataları yapılandırma sorunudur.
+            code = str(err.get("code") or "unknown")
+            # Auth/rate-limit errors are a configuration problem.
             if code.startswith("api.auth") or "rate_exceeded" in code:
-                raise CobaltUnavailable(f"cobalt reddetti: {code}")
-            raise CobaltError(f"cobalt hata: {code}")
+                raise CobaltUnavailable(f"cobalt rejected the request: {code}")
+            raise CobaltError(f"cobalt error: {code}")
 
         return data
 
-    # ── Dosya indirme ─────────────────────────────────────────────────────────
+    # ── File download ───────────────────────────────────────────────────────
 
     def _download_file(self, url: str, dest: Path, *, on_progress=None) -> int:
-        """Tek bir dosyayı indirir; boyut sınırını aşarsa iptal eder."""
+        """Downloads a single file; aborts if it exceeds the size limit."""
         try:
             with requests.get(
                 url,
@@ -237,7 +237,7 @@ class CobaltClient:
 
                 total = int(resp.headers.get("Content-Length") or 0)
                 if total and total > self.max_bytes:
-                    raise CobaltError(f"Dosya çok büyük: {total} bayt")
+                    raise CobaltError(f"File too large: {total} bytes")
 
                 written = 0
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -247,31 +247,31 @@ class CobaltClient:
                         if not chunk:
                             continue
                         written += len(chunk)
-                        # Sonsuz/aşırı büyük akışa karşı sert kesme.
+                        # Hard cutoff against an endless/oversized stream.
                         if written > self.max_bytes:
                             fh.close()
                             dest.unlink(missing_ok=True)
-                            raise CobaltError("Dosya boyut sınırını aştı, indirme kesildi.")
+                            raise CobaltError("File exceeded the size limit, download aborted.")
                         fh.write(chunk)
                         if on_progress:
                             on_progress(written, total)
 
-                # BOŞ DOSYA KORUMASI:
-                # cobalt bazı durumlarda HTTP 200 + 0 bayt döner (ör. YouTube'u
-                # veri merkezi IP'sinden çekerken, session server olmadan).
-                # Bunu başarı sayarsak kullanıcıya boş dosya gider ve pipeline
-                # sıradaki kaynağa geçmez. Boş sonuç = hata.
+                # EMPTY FILE GUARD:
+                # cobalt sometimes returns HTTP 200 + 0 bytes (e.g. fetching
+                # YouTube from a datacenter IP without a session server). If
+                # we counted that as success the user would get an empty
+                # file and the pipeline wouldn't move to the next source.
                 if written == 0:
                     dest.unlink(missing_ok=True)
                     raise CobaltError(
-                        "cobalt boş dosya döndürdü (0 bayt) — sonraki kaynağa geçiliyor."
+                        "cobalt returned an empty file (0 bytes) — moving to the next source."
                     )
 
                 return written
 
         except requests.RequestException as exc:
             dest.unlink(missing_ok=True)
-            raise CobaltError(f"cobalt dosya indirme hatası: {exc}") from exc
+            raise CobaltError(f"cobalt file download error: {exc}") from exc
 
     def download(
         self,
@@ -283,10 +283,10 @@ class CobaltClient:
         on_progress=None,
     ) -> tuple[list[str], dict[str, Any]]:
         """
-        cobalt üzerinden indirir.
+        Downloads through cobalt.
 
-        Dönüş: (dosya_yolları, info_dict)
-        Hata durumunda CobaltError yükseltir → pipeline sonraki kaynağa geçer.
+        Returns (file_paths, info_dict). Raises CobaltError on failure so the
+        pipeline moves on to the next source.
         """
         data = self.request(url, mode, subtitle_lang=subtitle_lang)
         status = data.get("status")
@@ -300,10 +300,11 @@ class CobaltClient:
             files.append(str(dest))
 
         elif status == "picker":
-            # Çoklu medya (Instagram carousel, TikTok slideshow, X çoklu görsel)
+            # Multiple media items (Instagram carousel, TikTok slideshow, X
+            # multi-image posts).
             items = data.get("picker") or []
             if not isinstance(items, list) or not items:
-                raise CobaltError("cobalt picker yanıtı boş.")
+                raise CobaltError("cobalt picker response was empty.")
 
             for index, item in enumerate(items, start=1):
                 if not isinstance(item, dict) or not item.get("url"):
@@ -316,9 +317,9 @@ class CobaltClient:
                     self._download_file(str(item["url"]), dest, on_progress=on_progress)
                     files.append(str(dest))
                 except CobaltError:
-                    continue  # tek parça başarısızsa kalanları kurtar
+                    continue  # save the rest even if one item fails
 
-            # Slideshow'un ses parçası varsa onu da al.
+            # Slideshows may have an audio track too.
             audio_url = data.get("audio")
             if audio_url:
                 dest = download_dir / _safe_filename(
@@ -331,23 +332,23 @@ class CobaltClient:
                     pass
 
             if not files:
-                raise CobaltError("cobalt picker içeriği indirilemedi.")
+                raise CobaltError("cobalt picker content could not be downloaded.")
 
         elif status == "local-processing":
-            # localProcessing="disabled" gönderdiğimiz için normalde buraya
-            # düşmeyiz. Düşersek ffmpeg işini üstlenmek yerine sonraki kaynağa
-            # bırakıyoruz — yt-dlp bunu zaten daha iyi yapıyor.
+            # We normally never hit this because localProcessing="disabled"
+            # is sent. If we do, defer to the next source instead of taking
+            # on the merge/remux ourselves — yt-dlp already does that better.
             raise CobaltError(
-                "cobalt yerel işleme istedi (merge/remux gerekiyor) — sonraki kaynağa geçiliyor."
+                "cobalt requested local processing (merge/remux needed) — moving to the next source."
             )
 
         else:
-            raise CobaltError(f"cobalt bilinmeyen durum döndü: {status}")
+            raise CobaltError(f"cobalt returned an unknown status: {status}")
 
-        # Son kontrol: yalnızca gerçekten içeriği olan dosyalar döner.
+        # Final check: only keep files that actually have content.
         files = [f for f in files if Path(f).is_file() and Path(f).stat().st_size > 0]
         if not files:
-            raise CobaltError("cobalt kullanılabilir dosya üretmedi.")
+            raise CobaltError("cobalt produced no usable file.")
 
         info = {
             "source": "cobalt",
@@ -357,9 +358,9 @@ class CobaltClient:
         return files, info
 
     def health(self) -> dict[str, Any]:
-        """Instance ayakta mı? GET / servis bilgisini döner."""
+        """Is the instance up? Returns the GET / service info."""
         if not self.enabled:
-            raise CobaltUnavailable("cobalt adresi tanımlı değil.")
+            raise CobaltUnavailable("No cobalt address configured.")
         try:
             resp = requests.get(
                 self.api_url + "/",
@@ -368,7 +369,7 @@ class CobaltClient:
             )
             return resp.json()
         except Exception as exc:
-            raise CobaltUnavailable(f"cobalt sağlık kontrolü başarısız: {exc}") from exc
+            raise CobaltUnavailable(f"cobalt health check failed: {exc}") from exc
 
 
 def client_from_config(config: Any) -> CobaltClient:

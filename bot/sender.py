@@ -18,26 +18,24 @@ from .utils import AUDIO_EXTS, IMAGE_EXTS, VIDEO_EXTS, human_bytes
 
 logger = logging.getLogger("downloader")
 MAX_BYTES_NO_LOCAL_API = 50 * 1024 * 1024
-MEDIA_GROUP_LIMIT = 10  # Telegram sendMediaGroup üst sınırı
-PHOTO_MAX_BYTES = 10 * 1024 * 1024  # Telegram "photo" tipi için sert limit (10 MB)
+MEDIA_GROUP_LIMIT = 10              # Telegram sendMediaGroup limit
+PHOTO_MAX_BYTES = 10 * 1024 * 1024  # hard limit for the "photo" type
 
-# Flood control (RetryAfter) yeniden deneme ayarları.
+# Flood control (RetryAfter) retry budget.
 FLOOD_MAX_ATTEMPTS = 4
-FLOOD_MAX_TOTAL_WAIT = 180  # saniye
+FLOOD_MAX_TOTAL_WAIT = 180  # seconds
 
 
 class FloodLimitError(RuntimeError):
-    """Telegram flood limiti; tüm yeniden denemelerden sonra hâlâ engellendi."""
+    """Telegram flood limit; still blocked after every retry."""
 
     def __init__(self, retry_after: int):
         self.retry_after = int(retry_after)
-        super().__init__(f"Telegram flood limiti aşıldı, {self.retry_after}s bekleniyor.")
+        super().__init__(f"Telegram flood limit hit, retry after {self.retry_after}s.")
 
 
 async def _with_flood_retry(coro_factory):
-    """RetryAfter (flood control) hatalarında bekleyip yeniden dener.
-    Tüm denemeler tükenirse FloodLimitError fırlatır (üst katman kullanıcıya
-    özel bir mesaj gösterebilsin diye)."""
+    """Waits and retries on RetryAfter, then raises FloodLimitError."""
     total_wait = 0.0
     last_retry_after = 5
 
@@ -53,7 +51,7 @@ async def _with_flood_retry(coro_factory):
                 raise FloodLimitError(last_retry_after) from exc
 
             logger.warning(
-                "Flood control: %ss bekleniyor (deneme %s/%s)",
+                "Flood control: waiting %ss (attempt %s/%s)",
                 wait, attempt + 1, FLOOD_MAX_ATTEMPTS,
             )
             await asyncio.sleep(wait)
@@ -62,25 +60,25 @@ async def _with_flood_retry(coro_factory):
 
 
 def _is_reply_not_found(exc: Exception) -> bool:
-    # Kullanıcı orijinal mesajını silmişse Telegram bu hatayı döndürür.
+    # Telegram returns this when the user deleted their original message.
     raw = str(exc).lower()
     return "message to be replied not found" in raw or "reply message not found" in raw
 
 
 def _extract_file_id(message: Any, kind: str) -> str | None:
-    # Tekrar gönderimde kullanmak için gönderilen mesajdan file_id yakala.
+    """Grabs the file_id of a sent message so it can be reused from cache."""
     if message is None:
         return None
     try:
         if kind == "video" and message.video:
             return message.video.file_id
         if kind == "photo" and message.photo:
-            return message.photo[-1].file_id  # en yüksek çözünürlük
+            return message.photo[-1].file_id  # highest resolution
         if kind == "audio" and message.audio:
             return message.audio.file_id
         if kind == "document" and message.document:
             return message.document.file_id
-        # Telegram bazen video'yu document/animation olarak döndürebilir
+        # Telegram may return a video as a document or animation.
         if getattr(message, "document", None):
             return message.document.file_id
         if getattr(message, "video", None):
@@ -196,16 +194,14 @@ async def _send_too_large_message(
 
 
 async def _call_with_reply_fallback(send_coro_factory, common: dict):
-    # reply-not-found hatasında reply_to_message_id'yi düşürüp tekrar dener.
-    # Flood control (RetryAfter) hataları _with_flood_retry içinde bekleyip
-    # otomatik tekrar denenir; tükenirse FloodLimitError olarak yukarı çıkar.
+    # Retries without reply_to_message_id when the replied message is gone.
     try:
         return await _with_flood_retry(lambda: send_coro_factory(common))
     except BadRequest as exc:
         if _is_reply_not_found(exc) and common.get("reply_to_message_id") is not None:
             retry_common = dict(common)
             retry_common["reply_to_message_id"] = None
-            logger.warning("Reply mesajı bulunamadı, reply'siz yeniden deneniyor.")
+            logger.warning("Reply target missing, retrying without a reply.")
             return await _with_flood_retry(lambda: send_coro_factory(retry_common))
         raise
 
@@ -224,8 +220,8 @@ async def _send_video(context: Any, path: Path, common: dict, caption: str | Non
                 lambda c: context.bot.send_video(video=str(path), **kwargs, **c), common
             )
         except FloodLimitError:
-            # Flood limitinde tekrar cloud API'ye düşüp aynı dosyayı yeniden
-            # yüklemek limiti daha da kötüleştirir; direkt yukarı fırlat.
+            # Re-uploading the same file through the cloud API would only make
+            # the flood limit worse.
             raise
         except Exception as local_exc:
             logger.warning("Local API send_video failed, falling back: %s", local_exc)
@@ -347,13 +343,13 @@ async def _send_document(context: Any, path: Path, common: dict, caption: str | 
 
 
 def _media_bucket(kind: str) -> str:
-    # Telegram sendMediaGroup kısıtı: photo+video aynı albümde karışabilir,
-    # audio ve document ise yalnızca kendi türünden bir albüm oluşturabilir.
+    # sendMediaGroup rule: photo and video can share an album, audio and
+    # document can only be grouped with their own kind.
     return "visual" if kind in ("photo", "video") else kind
 
 
 def _group_sendable(items: list[tuple[Path, str]]) -> list[list[tuple[Path, str]]]:
-    """Ardışık aynı-bucket dosyaları, en fazla MEDIA_GROUP_LIMIT'lik gruplara ayırır."""
+    """Splits consecutive same-bucket files into groups of MEDIA_GROUP_LIMIT."""
     groups: list[list[tuple[Path, str]]] = []
     current: list[tuple[Path, str]] = []
     current_bucket: str | None = None
@@ -380,24 +376,22 @@ async def _send_media_group(
     common: dict,
     title: str,
 ) -> list[Any]:
-    """Birden fazla foto/video/ses/döküman dosyasını TEK albüm mesajı olarak
-    gönderir (sendMediaGroup). Not: Telegram albümlerde reply_markup (buton)
-    desteklemez; buton/detay mesajı çağıran taraf tarafından ayrıca gönderilir.
+    """
+    Sends several files as one album. Telegram albums do not support
+    reply_markup, so the caller sends the caption/buttons separately.
     """
     local = _local_api_enabled(context)
     opened_files: list[Any] = []
 
-    def _media_source(path: Path):
-        if local:
-            return str(path)
-        file = path.open("rb")
-        opened_files.append(file)
-        return file
-
-    def _build_media_list():
+    def _build_media_list(force_files: bool = False):
         media_list: list[Any] = []
         for path, kind in group:
-            source = _media_source(path)
+            if local and not force_files:
+                source: Any = str(path)
+            else:
+                source = path.open("rb")
+                opened_files.append(source)
+
             if kind == "video":
                 media_list.append(InputMediaVideo(media=source, supports_streaming=True))
             elif kind == "photo":
@@ -420,7 +414,7 @@ async def _send_media_group(
             ))
         except BadRequest as exc:
             if _is_reply_not_found(exc) and reply_to is not None:
-                logger.warning("Reply mesajı bulunamadı (albüm), reply'siz yeniden deneniyor.")
+                logger.warning("Reply target missing (album), retrying without a reply.")
                 return await _with_flood_retry(lambda: context.bot.send_media_group(
                     media=media_list,
                     chat_id=common["chat_id"],
@@ -432,16 +426,15 @@ async def _send_media_group(
             raise
 
     try:
-        media_list = _build_media_list()
         try:
-            return await _do_send(media_list, common.get("reply_to_message_id"))
+            return await _do_send(_build_media_list(), common.get("reply_to_message_id"))
         except FloodLimitError:
             raise
         except Exception as exc:
             if not local:
                 raise
-            # Local API albüm gönderimi başarısız oldu (flood dışı bir sebep) →
-            # dosyaları cloud API için yeniden açıp tekrar dene.
+            # Local API album upload failed for a non-flood reason: reopen the
+            # files and retry through the cloud API.
             logger.warning("Local API send_media_group failed, falling back: %s", exc)
             for f in opened_files:
                 try:
@@ -450,20 +443,10 @@ async def _send_media_group(
                     pass
             opened_files.clear()
 
-            cloud_media_list: list[Any] = []
-            for path, kind in group:
-                file = path.open("rb")
-                opened_files.append(file)
-                if kind == "video":
-                    cloud_media_list.append(InputMediaVideo(media=file, supports_streaming=True))
-                elif kind == "photo":
-                    cloud_media_list.append(InputMediaPhoto(media=file))
-                elif kind == "audio":
-                    cloud_media_list.append(InputMediaAudio(media=file, title=(title[:64] if title else None)))
-                else:
-                    cloud_media_list.append(InputMediaDocument(media=file))
-
-            return await _do_send(cloud_media_list, common.get("reply_to_message_id"))
+            return await _do_send(
+                _build_media_list(force_files=True),
+                common.get("reply_to_message_id"),
+            )
     finally:
         for f in opened_files:
             try:
@@ -487,27 +470,22 @@ async def send_downloaded_files(
     bare: bool = False,
 ) -> list[dict]:
     """
-    İndirilen dosyaları gönderir. Tüm dosyalar zaten indirilmiş olarak gelir
-    (worker indirmeyi tamamlayana kadar 'done' event tetiklenmez); birden
-    fazla medya varsa burada TEK/birkaç albüm (sendMediaGroup) halinde
-    gruplanarak gönderilir — hem düzenli görünüm, hem de tek tek mesaj
-    göndermekten kaynaklanan flood control riskini azaltmak için.
+    Sends the downloaded files. Multiple media are grouped into albums, both
+    for a tidy result and to reduce the flood-control risk of many separate
+    messages.
 
-    bare=True (safe mode): caption/keyboard/detay menüsü EKLENMEZ — yalnızca
-    medya dosyası kullanıcının mesajına yanıt olarak iletilir.
+    bare=True (safe mode): no caption, keyboard or details menu; only the media
+    is sent as a reply.
 
-    Flood limiti tüm yeniden denemelere rağmen aşılırsa FloodLimitError
-    fırlatılır; çağıran taraf (queue_consumer) bunu yakalayıp kullanıcıya
-    özel bir "Telegram şu an yoğun" mesajı gösterebilir.
+    Raises FloodLimitError when Telegram keeps refusing after every retry.
 
-    Dönüş: cache için [{"file_id"?, "path", "kind"}] listesi.
+    Returns [{"file_id"?, "path", "kind"}] for the cache.
     """
     info = info or {}
 
     if not files:
-        raise RuntimeError("Gönderilecek dosya bulunamadı.")
+        raise RuntimeError("No files to send.")
 
-    # Sade arayüz: caption yalnızca platform logosu + adı (bare modda hiç yok).
     caption = None if bare else final_caption(title or info.get("title") or "", source_url)
     has_description = bool(str(info.get("description") or "").strip())
 
@@ -528,9 +506,9 @@ async def send_downloaded_files(
     max_bytes = _max_upload_bytes(context)
     sent_any = False
     skipped_any = False
-    sent_items: list[dict] = []  # cache için file_id + path topla
+    sent_items: list[dict] = []
 
-    # 1) Gönderilebilir dosyaları ayıkla; limiti aşanlar için uyarı gönder.
+    # 1) Pick the sendable files and warn about the ones over the limit.
     sendable: list[tuple[Path, str]] = []
     for file_path in files:
         path = Path(file_path)
@@ -543,7 +521,7 @@ async def send_downloaded_files(
 
         if file_size and file_size > max_bytes:
             skipped_any = True
-            if not bare:  # safe modda kullanıcıya hiçbir bildirim gönderilmez
+            if not bare:
                 await _send_too_large_message(
                     context=context,
                     chat_id=chat_id,
@@ -553,20 +531,20 @@ async def send_downloaded_files(
                     file_size=file_size,
                     max_bytes=max_bytes,
                 )
-                sent_any = True  # reply_to_message_id sadece ilk mesaja eklenir
+                sent_any = True  # only the first message carries the reply
             continue
 
         if ext in VIDEO_EXTS:
             kind = "video"
         elif ext in IMAGE_EXTS:
-            # Telegram "photo" tipi için sert limit 10 MB (görsel işleme hattı
-            # kısıtı) — daha büyük görselleri "document" olarak gönder ki tek
-            # bir büyük foto tüm albümü (sendMediaGroup atomiktir) düşürmesin.
+            # Telegram's "photo" type is capped at 10 MB. Larger images go as
+            # documents so one big picture cannot fail the whole album
+            # (sendMediaGroup is atomic).
             if file_size and file_size > PHOTO_MAX_BYTES:
                 kind = "document"
                 logger.info(
-                    "%s foto limiti (%s) aşıyor (%s), document olarak gönderilecek.",
-                    path.name, human_bytes(PHOTO_MAX_BYTES), human_bytes(file_size),
+                    "%s exceeds the photo limit (%s > %s), sending as a document.",
+                    path.name, human_bytes(file_size), human_bytes(PHOTO_MAX_BYTES),
                 )
             else:
                 kind = "photo"
@@ -579,18 +557,16 @@ async def send_downloaded_files(
     if not sendable:
         if skipped_any:
             return sent_items
-        raise RuntimeError("Dosya gönderilemedi.")
+        raise RuntimeError("No file could be sent.")
 
-    # Bucket'a göre kararlı sırala (visual → audio → document) ki tek büyük bir
-    # görsel "document"a düşünce foto/video albümünü ikiye bölmesin; aynı
-    # bucket içindeki orijinal indirme sırası korunur (stable sort).
+    # Stable sort by bucket (visual -> audio -> document) so a single oversized
+    # image demoted to "document" does not split the photo/video album.
     _bucket_priority = {"visual": 0, "audio": 1, "document": 2}
     sendable.sort(key=lambda item: _bucket_priority[_media_bucket(item[1])])
 
-    # Tek dosyaysa caption + buton doğrudan o mesaja eklenir (eski davranış).
-    # Birden fazla dosya varsa (tek albüm ya da karışık türler) caption/buton
-    # albümden SONRA ayrı bir mesaj olarak gönderilir — sendMediaGroup
-    # reply_markup desteklemediği için.
+    # A single file carries the caption and buttons directly; with several
+    # files they are sent afterwards as one follow-up message, because
+    # sendMediaGroup does not support reply_markup.
     single_file = len(sendable) == 1
     first_sent_message = None
 
@@ -650,8 +626,8 @@ async def send_downloaded_files(
                     "kind": kind,
                 })
 
-    # Birden fazla dosya gönderildiyse caption + Detaylar/Kaynak butonunu
-    # ayrı, tek bir takip mesajı olarak gönder.
+    # With several files the caption and the details/source buttons go out as a
+    # single follow-up message.
     if not bare and not single_file and (caption or keyboard):
         try:
             await context.bot.send_message(
@@ -663,13 +639,13 @@ async def send_downloaded_files(
                 reply_markup=keyboard,
             )
         except Exception:
-            logger.warning("Detay/kaynak butonlu takip mesajı gönderilemedi.", exc_info=True)
+            logger.warning("Could not send the details/source follow-up.", exc_info=True)
 
     if not sent_any and skipped_any:
         return sent_items
 
     if not sent_any:
-        raise RuntimeError("Dosya gönderilemedi.")
+        raise RuntimeError("No file could be sent.")
 
     return sent_items
 
@@ -685,10 +661,10 @@ async def send_from_cache(
     bare: bool = False,
 ) -> list[dict]:
     """
-    Cache kaydından gönderim.
-      - file_id varsa diske gitmeden direkt file_id ile iletir.
-      - file_id yoksa ama dosya diskte varsa yeniden yükler (file_id güncellenir).
-    Dönüş: güncellenmiş [{"file_id", "path", "kind"}] listesi (cache yazımı için).
+    Sends a cached record: by file_id when available, otherwise by re-uploading
+    the file from disk (and refreshing the file_id).
+
+    Returns the updated [{"file_id", "path", "kind"}] list.
     """
     items = record.get("items", [])
     title = record.get("title", "")
@@ -730,15 +706,13 @@ async def send_from_cache(
         }
 
         sent_msg = None
-        # 1) file_id ile direkt gönderim
         if file_id:
             try:
                 sent_msg = await _send_by_file_id(context, kind, file_id, common, current_caption, current_keyboard)
             except Exception as exc:
-                logger.warning("Cache file_id gönderimi başarısız, diske düşülüyor: %s", exc)
+                logger.warning("Cached file_id send failed, falling back to disk: %s", exc)
                 sent_msg = None
 
-        # 2) file_id yoksa/başarısızsa diskten yeniden yükle
         if sent_msg is None and path_str and Path(path_str).is_file():
             path = Path(path_str)
             ext = path.suffix.lower()
@@ -766,7 +740,7 @@ async def send_from_cache(
         })
 
     if not sent_any:
-        raise RuntimeError("Cache'den gönderilebilir içerik kalmadı.")
+        raise RuntimeError("Nothing sendable left in the cache record.")
 
     return result_items
 

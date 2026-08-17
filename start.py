@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 
-# Hatalı sistem proxy değişkenleri Telegram bağlantısını bozabilir; temizle.
+# Broken system proxy variables can break the Telegram connection.
 for _key in (
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
     "http_proxy", "https_proxy", "all_proxy",

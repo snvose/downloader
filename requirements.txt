@@ -5,11 +5,11 @@ python-dotenv>=1.0.0
 requests>=2.31.0
 mutagen>=1.47.0
 
-# TLS parmak izi taklidi (yt-dlp impersonate). Bot tarafı istemcileri
-# ayırt edip engelleyen sitelerde yt-dlp bunu kullanıyor; kurulu değilse
-# o siteler sessizce başarısız oluyor.
-# ÜST SINIR ŞART: yt-dlp yalnızca 0.5.10 ve 0.10.x–0.15.x sürümlerini kabul
-# ediyor (yt_dlp/networking/_curlcffi.py). 0.16 kurulduğunda paket sessizce
-# devre dışı kalıyor — impersonate hedef listesi boş dönüyor ve hiçbir yerde
-# hata görünmüyor.
+# TLS fingerprint impersonation (yt-dlp impersonate). yt-dlp uses this on
+# sites that detect and block bot clients; without it, those sites fail
+# silently.
+# UPPER BOUND REQUIRED: yt-dlp only accepts versions 0.5.10 and 0.10.x-0.15.x
+# (yt_dlp/networking/_curlcffi.py). Installing 0.16 silently disables the
+# package — the impersonate target list comes back empty with no error
+# shown anywhere.
 curl_cffi>=0.10,<0.16

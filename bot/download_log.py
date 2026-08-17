@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 """
-bot/download_log.py — İndirme olaylarının detaylı, yapılandırılmış loglaması (B09).
+Structured logging of download events.
 
-Her indirme şu alanlarla loglanır:
-  zaman damgası, user id + kullanıcı adı, chat id, chat başlığı, chat türü,
-  platform, URL, sonuç, dosya boyutu, işlem süresi.
+Every download is logged with: timestamp, user id + username, chat id, chat
+title, chat type, platform, URL, result, file size and duration.
 
-Loglar data/logs/ altında GÜNLÜK dosyalar halinde tutulur ve LOG_RETENTION_DAYS
-(varsayılan 7) gün sonra TimedRotatingFileHandler tarafından otomatik silinir.
-Hatalar ayrıca tam traceback ile yazılır.
+Logs live in data/logs/ as daily files and are removed automatically after
+LOG_RETENTION_DAYS days. Failures are additionally written with a full
+traceback.
 """
 
 import logging
@@ -18,12 +17,11 @@ from pathlib import Path
 
 from .utils import human_bytes
 
-# İndirme olayları için ana uygulama logundan ayrı, özel logger.
 _download_logger = logging.getLogger("downloads")
 
 
 def setup_download_logger(log_dir: Path, retention_days: int = 7) -> logging.Logger:
-    """data/logs/downloads.log -> her gece döner, retention_days kadar saklanır."""
+    """data/logs/downloads.log — rotates nightly, kept for retention_days."""
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "downloads.log"
 
@@ -37,16 +35,16 @@ def setup_download_logger(log_dir: Path, retention_days: int = 7) -> logging.Log
             log_file,
             when="midnight",
             interval=1,
-            backupCount=max(1, int(retention_days)),  # 7 gün sonra otomatik silinir
+            backupCount=max(1, int(retention_days)),
             encoding="utf-8",
             utc=False,
         )
-        handler.suffix = "%Y-%m-%d"  # dosyalar günlük tarihle ayrışır
+        handler.suffix = "%Y-%m-%d"
         handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
         _download_logger.addHandler(handler)
 
     _download_logger.setLevel(logging.INFO)
-    _download_logger.propagate = False  # ana log'u kirletme
+    _download_logger.propagate = False  # keep it out of the main log
     return _download_logger
 
 
@@ -64,7 +62,7 @@ def log_download(
     duration: float | None = None,
     extra: str = "",
 ) -> None:
-    """Tek bir indirme işlemini tek satır olarak yapılandırılmış biçimde loglar."""
+    """Logs a single download as one structured line."""
     size_text = human_bytes(file_size) if file_size else "-"
     dur_text = f"{duration:.1f}s" if duration is not None else "-"
     parts = [
@@ -85,7 +83,6 @@ def log_download(
 
 
 def log_download_error(*, url: str, platform: str | None, traceback_text: str) -> None:
-    """İndirme hatasını tam traceback ile loglar."""
     _download_logger.error(
         "result=error | platform=%s | url=%s\nTRACEBACK:\n%s",
         platform or "-", url, traceback_text,

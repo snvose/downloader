@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 """
-bot/state.py — Bot çalışma modu yönetimi.
+Bot run mode.
 
-Üç mod:
-  - normal      : olağan çalışma
-  - safe        : sessiz mod. Kullanıcıya mesaj/yazıyor/emoji gönderilmez;
-                  link sessizce indirilip yalnızca medya yanıt olarak iletilir.
-  - maintenance : bakım modu. Hiçbir indirme yapılmaz; sabit mesaj döner.
+  normal      : regular operation
+  safe        : silent mode. No status messages, buttons or emoji are sent;
+                links are downloaded quietly and only the media is replied.
+  maintenance : no downloads at all; a fixed notice is returned.
 
-Mod bilgisi data/bot_state.json içinde KALICI saklanır ve yeniden başlatmada
-korunur. "enabled" alanı geriye dönük uyumluluk için korunur (eski /dur /basla).
+The mode is stored in data/bot_state.json and survives restarts. The
+"enabled" flag is kept for the legacy /stop and /start commands.
 """
 
 import logging
@@ -25,21 +24,19 @@ MODE_SAFE = "safe"
 MODE_MAINTENANCE = "maintenance"
 VALID_MODES = {MODE_NORMAL, MODE_SAFE, MODE_MAINTENANCE}
 
-MAINTENANCE_MESSAGE = "Bot şu an bakımda, lütfen beklemede kalın."
+DEFAULT_LANGUAGE = "en"
 
 
 class BotState:
-    """bot_state.json üzerinde mod ve enabled durumunu yönetir."""
+    """Reads and writes the mode / enabled / language flags."""
 
     def __init__(self, data_dir: Path):
         self.state_file = data_dir / "bot_state.json"
 
-    # ── Düşük seviye okuma/yazma ──────────────────────────────────────────────
     def _read(self) -> dict:
         data = read_json(self.state_file, {"enabled": True, "mode": MODE_NORMAL})
         if not isinstance(data, dict):
             data = {"enabled": True, "mode": MODE_NORMAL}
-        # Eski dosyalarda mode olmayabilir → normal kabul et
         if data.get("mode") not in VALID_MODES:
             data["mode"] = MODE_NORMAL
         return data
@@ -47,20 +44,18 @@ class BotState:
     def _write(self, data: dict) -> None:
         write_json_atomic(self.state_file, data)
 
-    # ── Mod ───────────────────────────────────────────────────────────────────
+    # ── Mode ──────────────────────────────────────────────────────────────────
     def get_mode(self) -> str:
         return self._read().get("mode", MODE_NORMAL)
 
     def set_mode(self, mode: str) -> str:
-        """Modu değiştirir, kalıcı yazar ve loglar. Geçersizse normal'e düşer."""
         if mode not in VALID_MODES:
             mode = MODE_NORMAL
         data = self._read()
         previous = data.get("mode", MODE_NORMAL)
         data["mode"] = mode
         self._write(data)
-        # Her mod değişikliğini logla
-        logger.info("MOD DEĞİŞİKLİĞİ: %s -> %s", previous, mode)
+        logger.info("MODE CHANGED: %s -> %s", previous, mode)
         return mode
 
     def is_safe(self) -> bool:
@@ -72,7 +67,7 @@ class BotState:
     def is_normal(self) -> bool:
         return self.get_mode() == MODE_NORMAL
 
-    # ── Başlat / Durdur (enabled alanı; Permissions ile aynı dosyayı paylaşır) ─
+    # ── Enabled (shares the same file as Permissions) ─────────────────────────
     def get_enabled(self) -> bool:
         return bool(self._read().get("enabled", True))
 
@@ -80,18 +75,17 @@ class BotState:
         data = self._read()
         data["enabled"] = bool(enabled)
         self._write(data)
-        logger.info("BOT DURUMU: %s", "başlatıldı" if enabled else "durduruldu")
+        logger.info("BOT STATE: %s", "started" if enabled else "stopped")
         return enabled
 
-    # ── Dil ────────────────────────────────────────────────────────────────────
+    # ── Language ──────────────────────────────────────────────────────────────
     def get_language(self) -> str:
-        return self._read().get("language", "tr")
+        return self._read().get("language", DEFAULT_LANGUAGE)
 
     def set_language(self, lang: str) -> str:
-        """Bot dilini kalıcı yazar ve loglar."""
         data = self._read()
-        previous = data.get("language", "tr")
+        previous = data.get("language", DEFAULT_LANGUAGE)
         data["language"] = lang
         self._write(data)
-        logger.info("DİL DEĞİŞİKLİĞİ: %s -> %s", previous, lang)
+        logger.info("LANGUAGE CHANGED: %s -> %s", previous, lang)
         return lang

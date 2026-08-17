@@ -42,29 +42,29 @@ def _render_emoji_page(page: int, last_id: str | None = None) -> tuple[str, Inli
     assigned = assigned_count()
 
     lines = [
-        f"<b>🎨 Premium Emoji Yönetimi</b>",
-        f"<code>[{_progress_bar(assigned, total)}]</code> <b>{assigned}/{total}</b> slot özelleştirildi",
+        "<b>🎨 Premium Emoji Manager</b>",
+        f"<code>[{_progress_bar(assigned, total)}]</code> <b>{assigned}/{total}</b> slots customized",
         "",
     ]
 
-    # Nasıl çalıştığı her zaman görünür — admin panele girip ne yapacağını
-    # bilemeden bakakalmasın.
+    # How this works is always shown, so the admin never opens the panel and
+    # gets stuck not knowing what to do.
     if last_id:
         lines.append(
-            f"🎯 <b>Elindeki emoji:</b> <tg-emoji emoji-id=\"{esc(last_id)}\">✨</tg-emoji> "
+            f"🎯 <b>Emoji in hand:</b> <tg-emoji emoji-id=\"{esc(last_id)}\">✨</tg-emoji> "
             f"<code>{esc(last_id)}</code>\n"
-            "👇 Aşağıdan bir slota dokun, oraya atansın."
+            "👇 Tap a slot below to assign it."
         )
     else:
         lines.append(
-            "💡 <b>Nasıl kullanılır?</b>\n"
-            "1️⃣ Bana bir <b>premium emoji</b> gönder (Telegram Premium gerekir)\n"
-            "2️⃣ Aşağıdaki listeden hangi yerde görünmesini istiyorsan ona dokun\n"
-            "3️⃣ ♻️ ile o slotu varsayılana döndürebilirsin"
+            "💡 <b>How to use</b>\n"
+            "1️⃣ Send me a <b>premium emoji</b> (requires Telegram Premium)\n"
+            "2️⃣ Tap where in the list you want it to show up\n"
+            "3️⃣ ♻️ resets that slot back to default"
         )
 
     lines.append("")
-    lines.append("<i>Her satır: emojinin botta NEREDE görüneceğini anlatır.</i>")
+    lines.append("<i>Each row describes WHERE that emoji shows up in the bot.</i>")
 
     rows: list[list[InlineKeyboardButton]] = []
     current_cat = None
@@ -77,15 +77,15 @@ def _render_emoji_page(page: int, last_id: str | None = None) -> tuple[str, Inli
 
         custom_id = (data.get(key, {}) or {}).get("custom_id")
         mark = "✅" if custom_id else "⬜"
-        state = "özel" if custom_id else "varsayılan"
+        state = "custom" if custom_id else "default"
 
-        # Canlı önizleme: solda o an kullanılan emoji, sağda nerede göründüğü.
+        # Live preview: the currently used emoji on the left, where it shows on the right.
         lines.append(
             f"{mark} {em(key)} <b>{esc(ctx)}</b>\n"
             f"     <i>{state}</i> · <code>#{sid:02d}</code>"
         )
 
-        # Buton metni parse_mode desteklemediği için fallback emoji gösterilir.
+        # Button labels don't support parse_mode, so the fallback emoji is used.
         rows.append([
             InlineKeyboardButton(
                 f"{mark} {fb} {ctx[:24]}", callback_data=f"emoji|set|{sid}|{page}"
@@ -102,13 +102,10 @@ def _render_emoji_page(page: int, last_id: str | None = None) -> tuple[str, Inli
     rows.append(nav)
 
     rows.append([
-        InlineKeyboardButton("🗑 Tümünü Sıfırla", callback_data="emoji|resetall"),
-        InlineKeyboardButton("📤 Yedek İndir", callback_data="emoji|file"),
+        InlineKeyboardButton("🗑 Reset all", callback_data="emoji|resetall"),
+        InlineKeyboardButton("📤 Download backup", callback_data="emoji|file"),
     ])
-    # Geri butonu admin paneline döner. Önceden "menu|owner"a gidiyordu;
-    # emoji paneli /admin üzerinden açıldığı için kullanıcı farklı bir
-    # menüye düşüyordu.
-    rows.append([InlineKeyboardButton("‹ Admin Paneli", callback_data="admin|panel")])
+    rows.append([InlineKeyboardButton("‹ Admin panel", callback_data="admin|panel")])
 
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
@@ -144,10 +141,10 @@ async def emoji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if not args:
         await safe_reply(update.message,
-            "Kullanım:\n"
+            "Usage:\n"
             "<code>/emoji slot_id emoji_id</code>\n"
             "<code>/emoji slot_id reset</code>\n"
-            "<code>/emojiler</code>",
+            "<code>/emojis</code>",
             parse_mode="HTML",
         )
         return
@@ -155,12 +152,12 @@ async def emoji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         sid = int(args[0])
     except Exception:
-        await safe_reply(update.message,"Geçerli slot ID gir.")
+        await safe_reply(update.message, "Enter a valid slot ID.")
         return
 
     slot = ID_TO_SLOT.get(sid)
     if not slot:
-        await safe_reply(update.message,"Slot bulunamadı. /emojiler")
+        await safe_reply(update.message, "Slot not found. /emojis")
         return
 
     key, fb, ctx = slot
@@ -170,8 +167,8 @@ async def emoji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await safe_reply(update.message,
             f"<b>#{sid:02d}</b> <code>{esc(key)}</code>\n"
             f"{esc(ctx)}\n"
-            f"Durum: <code>{esc(str(current or 'atanmadı'))}</code>\n"
-            f"Önizleme: {em(key)}",
+            f"Status: <code>{esc(str(current or 'not assigned'))}</code>\n"
+            f"Preview: {em(key)}",
             parse_mode="HTML",
         )
         return
@@ -180,16 +177,16 @@ async def emoji_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if value.lower() == "reset":
         reset_slot(key)
-        await safe_reply(update.message,f"Sıfırlandı: <b>#{sid:02d}</b> {fb} {esc(ctx)}", parse_mode="HTML")
+        await safe_reply(update.message, f"Reset: <b>#{sid:02d}</b> {fb} {esc(ctx)}", parse_mode="HTML")
         return
 
     if not value.isdigit():
-        await safe_reply(update.message,"Emoji ID sayısal olmalı. Premium emojiyi bana özelden gönder, ID'yi yakalayayım.")
+        await safe_reply(update.message, "The emoji ID must be numeric. Send me the premium emoji directly and I'll capture the ID.")
         return
 
     set_slot(key, value)
     context.user_data["last_emoji_id"] = value
-    await safe_reply(update.message,f"Atandı: <b>#{sid:02d}</b> {em(key)} <code>{esc(key)}</code>", parse_mode="HTML")
+    await safe_reply(update.message, f"Assigned: <b>#{sid:02d}</b> {em(key)} <code>{esc(key)}</code>", parse_mode="HTML")
 
 
 async def emoji_detect_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -222,8 +219,8 @@ async def emoji_detect_message(update: Update, context: ContextTypes.DEFAULT_TYP
     text, markup = _render_emoji_page(0, custom_id)
 
     await safe_reply(message,
-        f"Seçili emoji ID: <code>{esc(custom_id)}</code>\n\n"
-        "Aşağıdan slot seçersen bu ID o slota atanır.\n\n"
+        f"Selected emoji ID: <code>{esc(custom_id)}</code>\n\n"
+        "Pick a slot below to assign this ID to it.\n\n"
         + text,
         parse_mode="HTML",
         reply_markup=markup,
@@ -238,7 +235,7 @@ async def handle_emoji_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     permissions = context.application.bot_data["permissions"]
     if not permissions.is_admin(query.from_user.id):
-        await query.answer("Bu alan sadece owner için.", show_alert=True)
+        await query.answer("Admins only.", show_alert=True)
         return True
 
     parts = query.data.split("|")
@@ -248,17 +245,16 @@ async def handle_emoji_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer()
         return True
 
-    # Tümünü sıfırla — önce onay iste
     if sub == "resetall":
         await query.answer()
         await safe_query_edit(
             query,
-            "🗑 <b>Tüm premium emoji atamaları sıfırlansın mı?</b>\n\n"
-            "Bu işlem geri alınamaz; tüm slotlar varsayılan emojilere döner.",
+            "🗑 <b>Reset every premium emoji assignment?</b>\n\n"
+            "This can't be undone; every slot goes back to its default emoji.",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Evet, sıfırla", callback_data="emoji|resetall_yes"),
-                InlineKeyboardButton("‹ Vazgeç", callback_data="emoji|page|0"),
+                InlineKeyboardButton("✅ Yes, reset", callback_data="emoji|resetall_yes"),
+                InlineKeyboardButton("‹ Cancel", callback_data="emoji|page|0"),
             ]]),
             disable_web_page_preview=True,
         )
@@ -267,7 +263,7 @@ async def handle_emoji_callback(update: Update, context: ContextTypes.DEFAULT_TY
     if sub == "resetall_yes":
         count = reset_all_slots()
         text, markup = _render_emoji_page(0, context.user_data.get("last_emoji_id"))
-        await query.answer(f"{count} slot sıfırlandı.")
+        await query.answer(f"{count} slots reset.")
         await safe_query_edit(query, text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
         return True
 
@@ -275,7 +271,7 @@ async def handle_emoji_callback(update: Update, context: ContextTypes.DEFAULT_TY
         page = int(parts[2]) if parts[2].isdigit() else 0
         text, markup = _render_emoji_page(page, context.user_data.get("last_emoji_id"))
         await query.answer()
-        await safe_query_edit(query,text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+        await safe_query_edit(query, text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
         return True
 
     if sub == "set" and len(parts) >= 4:
@@ -285,19 +281,19 @@ async def handle_emoji_callback(update: Update, context: ContextTypes.DEFAULT_TY
         last_id = context.user_data.get("last_emoji_id")
 
         if not slot:
-            await query.answer("Slot bulunamadı.", show_alert=True)
+            await query.answer("Slot not found.", show_alert=True)
             return True
 
         if not last_id:
-            await query.answer("Önce bana premium emoji gönder.", show_alert=True)
+            await query.answer("Send me a premium emoji first.", show_alert=True)
             return True
 
         key, _, _ = slot
         set_slot(key, str(last_id))
 
         text, markup = _render_emoji_page(page, str(last_id))
-        await query.answer(f"#{sid:02d} güncellendi")
-        await safe_query_edit(query,text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+        await query.answer(f"#{sid:02d} updated")
+        await safe_query_edit(query, text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
         return True
 
     if sub == "reset" and len(parts) >= 4:
@@ -306,26 +302,26 @@ async def handle_emoji_callback(update: Update, context: ContextTypes.DEFAULT_TY
         slot = ID_TO_SLOT.get(sid)
 
         if not slot:
-            await query.answer("Slot bulunamadı.", show_alert=True)
+            await query.answer("Slot not found.", show_alert=True)
             return True
 
         key, _, _ = slot
         reset_slot(key)
 
         text, markup = _render_emoji_page(page, context.user_data.get("last_emoji_id"))
-        await query.answer(f"#{sid:02d} sıfırlandı")
-        await safe_query_edit(query,text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
+        await query.answer(f"#{sid:02d} reset")
+        await safe_query_edit(query, text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=True)
         return True
 
     if sub == "file":
-        await query.answer("Dosya gönderiliyor...")
+        await query.answer("Sending file...")
         save_slots(load_slots())
 
         try:
             with EMOJI_FILE.open("rb") as file:
                 await query.message.reply_document(document=file, filename="emoji_slots.json")
         except Exception as exc:
-            await safe_reply(query.message,f"Dosya gönderilemedi: {esc(exc)}")
+            await safe_reply(query.message, f"Could not send the file: {esc(exc)}")
 
         return True
 

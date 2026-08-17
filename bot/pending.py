@@ -1,22 +1,11 @@
 from __future__ import annotations
 
 """
-bot/pending.py — YouTube format seçim menüsünün yaşam döngüsü.
+Lifecycle of the YouTube format selection menu.
 
-Sorun:
-    Kullanıcı format seçtiğinde menü mesajı ekranda kalıyordu. Kod yalnızca
-    butonları kaldırıyordu (edit_message_reply_markup(None)); mesajın kendisi
-    (çoğu zaman kapak fotoğrafı + uzun açıklama) sohbette duruyordu. Ayrıca:
-      • yeni link gönderildiğinde eski menü mesajı siliniyordu → hayır, sadece
-        butonları kaldırılıyordu, mesaj kalıyordu,
-      • admin "aktif işleri temizle" dediğinde menüler tamamen ÖKSÜZ kalıyordu
-        (butonlar hâlâ tıklanabilir ama iş kaydı yok),
-      • menülerin süresi hiç dolmuyordu; bellekte süresiz birikiyorlardı.
-
-Çözüm:
-    Menü mesajının silinmesi tek bir yerden yapılır (clear_pending_job) ve
-    TÜM yollar bunu kullanır: seçim, yeni link, iptal, hata, admin sıfırlama
-    ve süre aşımı.
+Deleting the menu message happens in exactly one place (clear_pending_job) and
+every path uses it: selection, a new link, cancel, error, admin reset and
+expiry.
 """
 
 import logging
@@ -25,17 +14,14 @@ from typing import Any
 
 logger = logging.getLogger("downloader")
 
-# Menü bu süre boyunca dokunulmazsa temizlenir (mesaj silinir).
+# A menu untouched for this long is removed.
 PENDING_TTL_SECONDS = 30 * 60
 
 
 async def delete_menu_message(app: Any, job: dict[str, Any]) -> None:
     """
-    Bir bekleyen işin menü mesajını siler.
-
-    Silme başarısız olursa (mesaj zaten silinmiş, çok eski, yetki yok)
-    en azından butonları kaldırmayı dener — kullanıcı tıklayıp
-    "menü zaman aşımına uğradı" uyarısı almasın.
+    Deletes the menu message of a pending job. If deletion fails (already
+    gone, too old, missing rights) the buttons are removed instead.
     """
     chat_id = job.get("chat_id")
     message_id = job.get("status_message_id")
@@ -58,7 +44,6 @@ async def delete_menu_message(app: Any, job: dict[str, Any]) -> None:
 
 
 async def clear_pending_job(app: Any, job_id: str, *, delete_message: bool = True) -> dict | None:
-    """Bekleyen işi kaydından düşürür ve menü mesajını temizler."""
     jobs = app.bot_data.get("pending_jobs") or {}
     job = jobs.pop(job_id, None)
 
@@ -69,7 +54,7 @@ async def clear_pending_job(app: Any, job_id: str, *, delete_message: bool = Tru
 
 
 async def clear_user_pending(app: Any, user_id: int) -> dict | None:
-    """Kullanıcının bekleyen menüsünü temizler (yeni link geldiğinde)."""
+    """Clears the user's pending menu (called when a new link arrives)."""
     jobs = app.bot_data.get("pending_jobs") or {}
 
     target_id = None
@@ -85,7 +70,7 @@ async def clear_user_pending(app: Any, user_id: int) -> dict | None:
 
 
 async def clear_all_pending(app: Any) -> int:
-    """Tüm bekleyen menüleri temizler (admin sıfırlaması)."""
+    """Clears every pending menu (admin reset)."""
     jobs = app.bot_data.get("pending_jobs") or {}
     job_ids = list(jobs.keys())
 
@@ -99,13 +84,7 @@ async def clear_all_pending(app: Any) -> int:
 
 
 async def expire_pending_jobs(app: Any, *, ttl: float = PENDING_TTL_SECONDS) -> int:
-    """
-    Süresi dolmuş menüleri temizler.
-
-    Menüler süresiz durduğunda hem bellekte birikiyor hem de kullanıcı eski
-    bir menüye tıklayınca anlamsız bir hata alıyordu. Bunun yerine mesaj
-    sessizce siliniyor.
-    """
+    """Removes menus that timed out, so they neither pile up nor confuse users."""
     jobs = app.bot_data.get("pending_jobs") or {}
     if not jobs:
         return 0
@@ -123,6 +102,6 @@ async def expire_pending_jobs(app: Any, *, ttl: float = PENDING_TTL_SECONDS) -> 
             jobs.pop(job_id, None)
 
     if expired:
-        logger.info("Süresi dolan %d format menüsü temizlendi.", len(expired))
+        logger.info("Removed %d expired format menus.", len(expired))
 
     return len(expired)

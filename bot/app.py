@@ -48,7 +48,6 @@ from .sender import FloodLimitError, cleanup_old_posts, send_downloaded_files
 from .storage import increment_stat, init_runtime_files
 from .ui import cancelled_text, configure_branding, progress_text, uploading_text
 from .utils import platform_name, safe_public_error
-# YENİ modüller: cache, chat takibi, mod yönetimi, temizlik, loglama, bildirim
 from .cache import MediaCache
 from .chats import ChatRegistry
 from .analytics import ActivityBuffer, activity_flusher
@@ -106,7 +105,7 @@ async def edit_job_message(
 def _cleanup_runtime(app: Application, manager: ProcessManager, job_id: str, *, keep_files: bool = False) -> None:
     cleanup_old_posts(app.bot_data.setdefault("media_posts", {}))
     if keep_files:
-        # başarılı indirmede dosyalar diskte kalır (cache/günlük temizlik için)
+        # Files stay on disk after a success (cache fallback, daily cleanup).
         manager.detach_job(job_id)
     else:
         manager.remove_job(job_id)
@@ -120,10 +119,10 @@ async def handle_watchdog_kill(
     config: Config | None,
 ) -> None:
     """
-    Watchdog tarafından öldürülen işi kullanıcıya bildirir ve kaydını temizler.
+    Notifies the user about a job the watchdog killed and cleans up its record.
 
-    Worker öldürüldüğü için kuyruğa "error" olayı gelmez; bildirimi burada
-    yapmazsak kullanıcı sonsuza dek "Hazırlanıyor..." mesajına bakar.
+    The worker was killed, so no "error" event ever reaches the queue; without
+    this the user would stare at "Preparing..." forever.
     """
     messages = {
         "timeout": t("job_timeout"),
@@ -161,21 +160,22 @@ async def queue_consumer(app: Application) -> None:
     while True:
         try:
             # ── Watchdog ──────────────────────────────────────────────────────
-            # Sınırı aşan işleri (süre/boyut/ölü süreç) öldürür. Boşta kalan
-            # döngüde saniyede bir yeterli; iş yoksa hiç maliyeti yok.
+            # Kills jobs over their limit (time/size/dead process). Once a
+            # second is plenty when idle and costs nothing when there are no
+            # jobs.
             now_ts = time.time()
             if manager.jobs and now_ts - last_reap >= 1.0:
                 last_reap = now_ts
                 for dead_job, reason in manager.reap():
                     await handle_watchdog_kill(app, manager, dead_job, reason, config)
 
-            # Süresi dolan format menülerini temizle (dakikada bir yeterli).
+            # Expired format menus, once a minute is enough.
             if now_ts - last_pending_sweep >= 60.0:
                 last_pending_sweep = now_ts
                 try:
                     await expire_pending_jobs(app)
                 except Exception:
-                    logger.exception("Bekleyen menü temizliği başarısız")
+                    logger.exception("Pending menu cleanup failed")
 
             event = manager.get_event_nowait()
 
@@ -195,7 +195,6 @@ async def queue_consumer(app: Application) -> None:
                 continue
 
             if event_type == "cookie_error":
-                # Cookie kaynaklı hata: ayrı log kanalı + panel sayacı.
                 cookie_log: CookieLog | None = app.bot_data.get("cookie_log")
                 if cookie_log:
                     await asyncio.to_thread(
@@ -207,13 +206,12 @@ async def queue_consumer(app: Application) -> None:
                         user_id=job.user_id,
                     )
                     logger.warning(
-                        "COOKIE %s | platform=%s | sebep=%s",
+                        "COOKIE %s | platform=%s | reason=%s",
                         job_id, event.get("platform"), event.get("reason"),
                     )
                 continue
 
             if event_type == "progress":
-                # Safe mode (silent): ilerleme/yazıyor bildirimi gösterilmez
                 if job.silent:
                     continue
                 now = time.time()
@@ -239,7 +237,6 @@ async def queue_consumer(app: Application) -> None:
                 job.title = title
                 manager.mark_done(job_id)
 
-                # Safe mode (silent): yükleniyor mesajı/edit YOK
                 if not job.silent:
                     await edit_job_message(
                         app,
@@ -263,17 +260,12 @@ async def queue_consumer(app: Application) -> None:
                         info=info,
                         mode=mode,
                         user_id=job.user_id,
-                        bare=job.silent,  # safe mode → başlık/buton yok
+                        bare=job.silent,
                     )
                 except FloodLimitError as exc:
                     logger.exception("JOB %s SEND ERROR (flood limit, retry_after=%ss)", job_id, exc.retry_after)
                     if not job.silent:
-                        await edit_job_message(
-                            app,
-                            job,
-                            f"⏳ Telegram şu anda çok yoğun (flood limiti). "
-                            f"Lütfen birkaç dakika sonra tekrar deneyin.",
-                        )
+                        await edit_job_message(app, job, t("flood_limit"))
                     if config:
                         increment_stat(config.data_dir, "failed_downloads")
                     await asyncio.to_thread(
@@ -287,7 +279,7 @@ async def queue_consumer(app: Application) -> None:
                     if config:
                         await notify_admin_failure(
                             app.bot, config.admin_id,
-                            summary=f"Telegram flood limiti aşıldı (retry_after={exc.retry_after}s).",
+                            summary=f"Telegram flood limit hit (retry_after={exc.retry_after}s).",
                             url=source_url, platform=str(info.get("platform") or ""),
                             user_id=job.user_id, username=job.username,
                             chat_id=job.chat_id, chat_title=job.chat_title,
@@ -297,14 +289,9 @@ async def queue_consumer(app: Application) -> None:
                 except Exception:
                     logger.exception("JOB %s SEND ERROR", job_id)
                     if not job.silent:
-                        await edit_job_message(
-                            app,
-                            job,
-                            "Dosyalar Telegram'a yüklenemedi. Sunucu veya Telegram API hatası olabilir.",
-                        )
+                        await edit_job_message(app, job, t("upload_failed"))
                     if config:
                         increment_stat(config.data_dir, "failed_downloads")
-                    # Detaylı loglama (hata)
                     await asyncio.to_thread(
                         log_download,
                         user_id=job.user_id, username=job.username,
@@ -313,11 +300,10 @@ async def queue_consumer(app: Application) -> None:
                         url=source_url, result="send_failed",
                         duration=time.time() - job.started_at,
                     )
-                    # Admine bildirim (safe modda da admin bilgilendirilir)
                     if config:
                         await notify_admin_failure(
                             app.bot, config.admin_id,
-                            summary="Telegram'a yükleme başarısız.",
+                            summary="Upload to Telegram failed.",
                             url=source_url, platform=str(info.get("platform") or ""),
                             user_id=job.user_id, username=job.username,
                             chat_id=job.chat_id, chat_title=job.chat_title,
@@ -325,10 +311,10 @@ async def queue_consumer(app: Application) -> None:
                     _cleanup_runtime(app, manager, job_id)
                     continue
 
-                # file_id'leri cache'e yaz. Yalnızca lookup ile eşleşen modlar
-                # (auto/audio_best) cache'lenir; interaktif YouTube formatları
-                # (video_1080, thumbnail vb.) hiç okunmadığı için bloat yapmasın.
-                # Eksik (too-large nedeniyle atlanmış) gönderimler cache'lenmez.
+                # Only lookup-friendly modes (auto/audio_best) are cached;
+                # interactive YouTube formats (video_1080, thumbnail...) are
+                # never looked up again, so caching them would just be bloat.
+                # A partial send (files skipped for size) is not cached either.
                 cacheable = mode in {"auto", "audio_best"}
                 complete = len(sent_items) == len(files)
                 if cache and sent_items and cacheable and complete:
@@ -337,7 +323,6 @@ async def queue_consumer(app: Application) -> None:
                         title=title, info=info,
                     )
 
-                # başarılı indirmede sohbet kullanım kaydını güncelle
                 if chats:
                     await asyncio.to_thread(
                         chats.record_download,
@@ -347,8 +332,8 @@ async def queue_consumer(app: Application) -> None:
                         platform=str(info.get("platform") or ""),
                     )
 
-                # Detaylı indirme logu (tüm alanlar). Boyut hesabı blocking
-                # olduğundan log ile birlikte thread'e taşınır.
+                # Detailed download log (all fields). Size calculation is
+                # blocking, so it moves to a thread along with the log write.
                 db: Database | None = app.bot_data.get("db")
 
                 def _log_success() -> None:
@@ -359,8 +344,8 @@ async def queue_consumer(app: Application) -> None:
                         except OSError:
                             pass
 
-                    # Veritabanı kaydı: kullanıcı/sohbet sayaçları + geçmiş.
-                    # (JSON logu geriye dönük uyumluluk için korunuyor.)
+                    # Database record: user/chat counters + history. The JSON
+                    # log is kept alongside it for backward compatibility.
                     if db:
                         try:
                             db.record_download(
@@ -374,7 +359,7 @@ async def queue_consumer(app: Application) -> None:
                                 chat_type=job.chat_type,
                             )
                         except Exception:
-                            logger.exception("DB indirme kaydı başarısız")
+                            logger.exception("DB download record failed")
 
                     log_download(
                         user_id=job.user_id, username=job.username,
@@ -385,7 +370,6 @@ async def queue_consumer(app: Application) -> None:
                     )
                 await asyncio.to_thread(_log_success)
 
-                # Durum mesajını sil (yalnızca normal modda ve mesaj varsa)
                 if not job.silent and job.status_message_id:
                     try:
                         await app.bot.delete_message(
@@ -398,7 +382,6 @@ async def queue_consumer(app: Application) -> None:
                 if config:
                     increment_stat(config.data_dir, "total_downloads", info.get("platform"))
 
-                # başarı → dosyaları koru (cache disk-fallback + günlük temizlik)
                 _cleanup_runtime(app, manager, job_id, keep_files=True)
                 continue
 
@@ -408,8 +391,8 @@ async def queue_consumer(app: Application) -> None:
                 public_message = event.get("public_message") or event.get("error") or ""
                 kind = event.get("kind") or "generic"
 
-                # ── Canlı yayın: beklenen reddetme, arıza değil ────────────────
-                # Kullanıcıya net mesaj + strike; admine hata bildirimi YOK.
+                # ── Livestream: an expected rejection, not a malfunction ──────
+                # The user gets a clear message plus a strike; no admin alert.
                 if kind == "live":
                     guard = app.bot_data.get("live_guard")
                     perms = app.bot_data.get("permissions")
@@ -422,7 +405,7 @@ async def queue_consumer(app: Application) -> None:
                     if not job.silent:
                         await edit_job_message(app, job, text, parse_mode="HTML")
 
-                    logger.warning("JOB %s canlı yayın reddedildi | url=%s", job_id, job.source_url)
+                    logger.warning("JOB %s livestream rejected | url=%s", job_id, job.source_url)
                     await asyncio.to_thread(
                         log_download,
                         user_id=job.user_id, username=job.username,
@@ -435,7 +418,6 @@ async def queue_consumer(app: Application) -> None:
                     _cleanup_runtime(app, manager, job_id)
                     continue
 
-                # Safe mode (silent): kullanıcıya HİÇBİR bildirim gönderilmez
                 if not job.silent:
                     await edit_job_message(
                         app,
@@ -443,7 +425,7 @@ async def queue_consumer(app: Application) -> None:
                         safe_public_error(public_message),
                     )
 
-                # B-yeni: tüm hatalar tam traceback ile loglanır
+                # All errors are logged with a full traceback.
                 logger.error("JOB %s ERROR\n%s", job_id, event.get("error"))
                 await asyncio.to_thread(
                     log_download_error,
@@ -463,10 +445,9 @@ async def queue_consumer(app: Application) -> None:
 
                 if config:
                     increment_stat(config.data_dir, "failed_downloads")
-                    # indirme tamamlanamadı → admine özet + son 20 satır + 2 buton
                     await notify_admin_failure(
                         app.bot, config.admin_id,
-                        summary=str(public_message)[:300] or "Bilinmeyen indirme hatası.",
+                        summary=str(public_message)[:300] or "Unknown download error.",
                         url=job.source_url,
                         platform=platform_name(job.source_url),
                         user_id=job.user_id, username=job.username,
@@ -492,19 +473,19 @@ async def queue_consumer(app: Application) -> None:
         except asyncio.CancelledError:
             break
         except Exception:
-            logger.exception("Queue consumer hatası")
+            logger.exception("Queue consumer error")
             await asyncio.sleep(1)
 
 
 async def app_error_handler(update: object, context) -> None:
-    logger.exception("Uygulama hatası", exc_info=context.error)
+    logger.exception("Application error", exc_info=context.error)
 
     try:
         config = context.application.bot_data.get("config")
         if config and config.admin_id:
             await context.bot.send_message(
                 chat_id=config.admin_id,
-                text=f"Uygulama hatası:\n{str(context.error)[:3500]}",
+                text=f"Application error:\n{str(context.error)[:3500]}",
             )
     except Exception:
         pass
@@ -512,9 +493,9 @@ async def app_error_handler(update: object, context) -> None:
 
 async def post_init(app: Application) -> None:
     app.bot_data["queue_task"] = asyncio.create_task(queue_consumer(app))
-    logger.info("Queue consumer başlatıldı.")
+    logger.info("Queue consumer started.")
 
-    # Mevcut JSON geçmişini veritabanına taşı (bir kez; tekrarı güvenli).
+    # Migrate legacy JSON history into the database (once; safe to repeat).
     db: Database | None = app.bot_data.get("db")
     cfg: Config | None = app.bot_data.get("config")
     if db and cfg:
@@ -522,26 +503,27 @@ async def post_init(app: Application) -> None:
             counts = await asyncio.to_thread(migrate_json_to_db, db, cfg.data_dir)
             if not counts.get("skipped"):
                 logger.info(
-                    "JSON → DB taşındı: %s sohbet, %s kullanıcı, %s platform kaydı",
+                    "JSON -> DB migration: %s chats, %s users, %s platform rows",
                     counts["chats"], counts["users"], counts["platforms"],
                 )
         except Exception:
-            logger.exception("JSON → DB taşıma başarısız (bot çalışmaya devam ediyor)")
+            logger.exception("JSON -> DB migration failed (bot keeps running)")
 
-    # günlük downloads temizliği (asyncio, harici cron yok)
+    # Daily downloads cleanup (asyncio, no external cron).
     config: Config | None = app.bot_data.get("config")
     cache: MediaCache | None = app.bot_data.get("media_cache")
-    if config and cache:
+    manager: ProcessManager | None = app.bot_data.get("process_manager")
+    if config and cache and manager:
         app.bot_data["cleanup_task"] = asyncio.create_task(
-            cleanup_scheduler(config, cache)
+            cleanup_scheduler(config, cache, manager.active_download_dirs)
         )
-        logger.info("Temizlik zamanlayıcı başlatıldı.")
+        logger.info("Cleanup scheduler started.")
 
-    # Aktivite tamponu: her mesajda DB'ye yazmak yerine periyodik toplu yazım.
+    # Activity buffer: batches writes instead of hitting the DB on every message.
     buffer = app.bot_data.get("activity_buffer")
     if buffer:
         app.bot_data["activity_task"] = asyncio.create_task(activity_flusher(buffer))
-        logger.info("Aktivite tamponu başlatıldı.")
+        logger.info("Activity buffer flusher started.")
 
 
 async def post_shutdown(app: Application) -> None:
@@ -552,7 +534,7 @@ async def post_shutdown(app: Application) -> None:
 
     manager: ProcessManager | None = app.bot_data.get("process_manager")
     if manager:
-        manager.close()  # queue'yu da kapat (yalnızca tam kapanışta)
+        manager.close()  # closes the queue too (full shutdown only)
 
 
 def build_application(config: Config) -> Application:
@@ -579,7 +561,6 @@ def build_application(config: Config) -> Application:
     app.bot_data["process_manager"] = ProcessManager(config)
     app.bot_data["permissions"] = Permissions(config)
     app.bot_data["media_posts"] = {}
-    # YENİ bileşenler: cache, sohbet kaydı, mod durumu
     app.bot_data["media_cache"] = MediaCache(config.data_dir, enabled=config.cache_enabled)
     app.bot_data["chat_registry"] = ChatRegistry(config.data_dir)
     app.bot_data["bot_state"] = BotState(config.data_dir)
@@ -591,39 +572,38 @@ def build_application(config: Config) -> Application:
         strike_limit=config.live_strike_limit,
         ban_days=config.live_ban_days,
     )
-    # Tutarlılık için koleksiyon anahtarlarını baştan oluştur
     app.bot_data["pending_jobs"] = {}
     app.bot_data["playlist_sessions"] = {}
 
-    # Ban kapısı: her şeyden önce (group=-2). Banlı kullanıcı/grup buradan
-    # geçemez; böylece yeni bir handler eklendiğinde ban kontrolünü unutmak
-    # mümkün olmuyor. Bkz. bot/handlers/gate.py
+    # Ban gate: runs before everything else (group=-2). A banned user/group
+    # cannot get past this, so a new handler can never forget the ban check.
+    # See bot/handlers/gate.py
     app.add_handler(TypeHandler(Update, ban_gate), group=-2)
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
-    app.add_handler(CommandHandler("ses", ses_command))
-    app.add_handler(CommandHandler("duyurular", duyuru_command))
+    app.add_handler(CommandHandler("audio", ses_command))
+    app.add_handler(CommandHandler("broadcasts", duyuru_command))
 
-    app.add_handler(CommandHandler("dur", dur_command))
-    app.add_handler(CommandHandler("basla", basla_command))
+    app.add_handler(CommandHandler("stop", dur_command))
+    app.add_handler(CommandHandler("resume", basla_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("banid", banid_command))
     app.add_handler(CommandHandler("unbanid", unbanid_command))
     app.add_handler(CommandHandler("refresh", refresh_command))
-    app.add_handler(CommandHandler("admin", admin_command))  # mod + kullanım paneli
+    app.add_handler(CommandHandler("admin", admin_command))
 
-    app.add_handler(CommandHandler("emojiler", emojiler_command))
+    app.add_handler(CommandHandler("emojis", emojiler_command))
     app.add_handler(CommandHandler("emoji", emoji_command))
 
-    # admin mod butonları (Safe/Maintenance) — diğer callback'lerden önce
+    # Admin mode buttons (Safe/Maintenance) — before the other callbacks.
     app.add_handler(CallbackQueryHandler(admin_callback, pattern=r"^admin\|"))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    # Duyuru taslağı: admin "Mesaj Yaz" dedikten sonraki mesajı yakalar.
-    # group=-1 → link handler'dan ÖNCE çalışır, yoksa duyuru metni indirme
-    # isteği sanılırdı.
+    # Broadcast draft: catches the admin's next message after "Write message".
+    # group=-1 runs it BEFORE the link handler, otherwise the draft text would
+    # be treated as a download request.
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
                        broadcast_compose_message),
@@ -642,18 +622,18 @@ def run_bot(config: Config) -> None:
     setup_logging(config)
     init_runtime_files(config.data_dir)
     ensure_file()
-    configure_branding(config)  # owner/topluluk linklerini .env'den UI'a aktar
+    configure_branding(config)  # copies owner/community links from .env into the UI
 
     app = build_application(config)
 
-    # Kayıtlı bot dilini i18n'e yükle
+    # Load the persisted bot language into i18n.
     from .i18n import set_language
     set_language(BotState(config.data_dir).get_language())
 
-    logger.info("%s başlatılıyor...", config.bot_name)
-    logger.info("Data dizini: %s", config.data_dir)
-    logger.info("Download dizini: %s", config.download_dir)
-    logger.info("Local Bot API: %s", "aktif" if config.local_bot_api_base else "kapalı")
+    logger.info("%s starting...", config.bot_name)
+    logger.info("Data directory: %s", config.data_dir)
+    logger.info("Download directory: %s", config.download_dir)
+    logger.info("Local Bot API: %s", "on" if config.local_bot_api_base else "off")
 
     app.run_polling(
         drop_pending_updates=True,

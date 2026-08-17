@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 """
-bot/downloader/pipeline.py — çok kaynaklı indirme akışı.
+Multi-source download pipeline.
 
-Bir linki, platforma göre belirlenmiş sırayla birden fazla kaynakta dener:
-    cobalt → yt-dlp → gallery-dl   (sıra data/sources.json ile ayarlanır)
+Tries a link against the platform-specific source order:
+    cobalt → yt-dlp → gallery-dl   (order configurable via data/sources.json)
 
-Bir kaynak başarısız olursa sıradaki denenir; hepsi başarısız olursa
-toplu hata mesajı döner. Canlı yayın kontrolü kaynaklardan ÖNCE, tek
-seferde yapılır (bkz. bot/live_guard.py).
+When a source fails the next one is tried; if all fail, a combined error is
+raised. The livestream check runs once, before any source is tried (see
+bot/live_guard.py).
 """
 
 import time
@@ -34,7 +34,7 @@ from .ytdlp import (
 
 
 def _cobalt_progress(job_id: str, queue: Any):
-    """cobalt indirme ilerlemesini bot kuyruğuna aktarır (saniyede bir)."""
+    """Forwards cobalt download progress to the bot's queue (once a second)."""
     last = [0.0]
 
     def hook(written: int, total: int) -> None:
@@ -66,10 +66,10 @@ def _run_cobalt(
     subtitle_lang: str = "",
 ) -> tuple[list[str], str, dict[str, Any]]:
     if not client.enabled:
-        raise CobaltUnavailable("cobalt yapılandırılmamış.")
+        raise CobaltUnavailable("cobalt is not configured.")
 
     if not platform_supported(platform):
-        raise CobaltUnavailable(f"cobalt bu platformu desteklemiyor: {platform}")
+        raise CobaltUnavailable(f"cobalt does not support this platform: {platform}")
 
     files, cinfo = client.download(
         url=url,
@@ -80,7 +80,7 @@ def _run_cobalt(
     )
 
     if not files:
-        raise CobaltError("cobalt dosya döndürmedi.")
+        raise CobaltError("cobalt returned no files.")
 
     title = Path(files[0]).stem
     info: dict[str, Any] = {
@@ -107,40 +107,41 @@ def download_media(
     subtitle_lang: str = "",
 ) -> tuple[list[str], str, dict[str, Any]]:
     """
-    Linki, platforma göre sıralanmış kaynaklarda dener ve ilk başarılı
-    sonucu döner.
+    Tries the link against the platform's ordered sources and returns the
+    first success.
 
-    LiveStreamError yukarı iletilir — canlı yayın hiçbir kaynakta denenmez.
+    LiveStreamError propagates up unchanged — a livestream is never tried
+    against any source.
     """
     platform = platform_name(url)
     download_dir = Path(download_dir)
 
-    # ── Canlı yayın kontrolü (tek sefer, tüm kaynaklar için) ──────────────────
+    # ── Livestream check (once, before any source) ───────────────────────────
     if not _is_spotify_url(url):
         is_live, _probe = probe_is_live(url, cookies_file=cookies_file)
         if is_live:
-            queue.put(log_event(job_id, "warning", f"Canlı yayın reddedildi: {url}"))
-            raise LiveStreamError("Canlı yayınlar indirilemez.")
+            queue.put(log_event(job_id, "warning", f"Livestream rejected: {url}"))
+            raise LiveStreamError("Livestreams cannot be downloaded.")
 
-    # ── Kullanılabilir kaynaklar ──────────────────────────────────────────────
+    # ── Available sources ──────────────────────────────────────────────────
     available = {"ytdlp", "gallerydl"}
     if cobalt and cobalt.enabled and platform_supported(platform):
         available.add("cobalt")
 
-    # Spotify özel akışı yalnızca yt-dlp'de var (metadata → YouTube araması).
+    # Spotify only has a yt-dlp path (metadata -> YouTube search).
     if _is_spotify_url(url):
         order = ["ytdlp"]
     else:
         priority = priority or SourcePriority(download_dir.parent.parent)
         order = priority.for_platform(platform, available=available)
 
-    queue.put(log_event(job_id, "info", f"Kaynak sırası [{platform}]: {' → '.join(order)}"))
+    queue.put(log_event(job_id, "info", f"Source order [{platform}]: {' → '.join(order)}"))
 
     errors: list[str] = []
 
     for source in order:
         try:
-            queue.put(log_event(job_id, "info", f"Kaynak deneniyor: {source}"))
+            queue.put(log_event(job_id, "info", f"Trying source: {source}"))
 
             if source == "cobalt":
                 files, title, info = _run_cobalt(
@@ -150,13 +151,13 @@ def download_media(
                 )
 
             elif source == "ytdlp":
-                # gallery-dl fallback'i pipeline yönetir; yt-dlp içinde tekrar
-                # denenmesin (aynı kaynak iki kez çalışmasın).
+                # The pipeline handles the gallery-dl fallback itself, so
+                # yt-dlp must not retry the same source internally.
                 files, title, info = download_with_ytdlp(
                     job_id=job_id, url=url, download_dir=download_dir,
                     queue=queue, cookies_file=cookies_file, mode=mode,
                     allow_gallery_fallback=False,
-                    skip_live_check=True,  # yukarıda zaten yapıldı
+                    skip_live_check=True,  # already done above
                     subtitle_lang=subtitle_lang,
                 )
 
@@ -171,33 +172,32 @@ def download_media(
 
             if files:
                 info.setdefault("source", source)
-                queue.put(log_event(job_id, "info", f"Kaynak başarılı: {source} ({len(files)} dosya)"))
+                queue.put(log_event(job_id, "info", f"Source succeeded: {source} ({len(files)} files)"))
                 return files, title, info
 
-            errors.append(f"{source}: dosya döndürmedi")
+            errors.append(f"{source}: returned no files")
 
         except LiveStreamError:
-            raise  # canlı yayın: sıradaki kaynağa geçme
+            raise  # livestream: don't try the next source
 
         except Exception as exc:
             message = short_error(exc)
             errors.append(f"{source}: {message}")
-            queue.put(log_event(job_id, "warning", f"Kaynak başarısız [{source}]: {message}"))
+            queue.put(log_event(job_id, "warning", f"Source failed [{source}]: {message}"))
 
-            # Başarısız kaynağın yarım bıraktığı dosyalar sıradaki kaynağın
-            # sonucuna karışmasın diye temizlenir.
+            # Clean up whatever the failed source left behind so it doesn't
+            # bleed into the next source's result.
             _clear_partial(download_dir)
 
-    # ── Cookie teşhisi ────────────────────────────────────────────────────────
-    # Tüm kaynaklar başarısız olduysa, hataların cookie kaynaklı olup
-    # olmadığını sınıflandırıp ayrı kanala bildiriyoruz. Böylece admin
-    # hangi platformun cookie'sini yenilemesi gerektiğini görebiliyor.
+    # ── Cookie diagnosis ──────────────────────────────────────────────────────
+    # If every source failed, classify whether it was cookie related and log
+    # it separately so the admin can see which platform's cookie to refresh.
     combined = " | ".join(errors)
     cookie_reason = classify_cookie_error(combined)
     if cookie_reason:
-        # Cookie'si sorunlu olan platform, linkin platformu olmayabilir:
-        # Spotify indirmeleri YouTube araması üzerinden yürür. Hatanın
-        # kendisi hangi platformu işaret ediyorsa o raporlanır.
+        # The platform with the bad cookie may differ from the link's own
+        # platform (Spotify runs through a YouTube search), so the error
+        # message itself decides which platform gets reported.
         cookie_platform = error_platform_hint(combined) or platform
         queue.put(cookie_event(
             job_id=job_id,
@@ -207,8 +207,4 @@ def download_media(
             error=combined[-400:],
         ))
 
-    raise RuntimeError("İndirme başarısız. Denemeler: " + " | ".join(errors[-5:]))
-
-
-# _clear_partial artık .ytdlp içinde tanımlı (yukarıda import ediliyor);
-# iki dosyada birebir aynı gövde duruyordu.
+    raise RuntimeError("Download failed. Attempts: " + " | ".join(errors[-5:]))

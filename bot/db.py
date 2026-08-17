@@ -1,23 +1,17 @@
 from __future__ import annotations
 
 """
-bot/db.py — SQLite veritabanı katmanı.
+SQLite storage layer.
 
-Neden SQLite: mevcut VDS'te (4 çekirdek, 7.7 GB RAM, tek bot süreci) ayrı bir
-veritabanı sunucusu çalıştırmak gereksiz. SQLite tek dosya, sıfır bakım.
+SQLite keeps a single-process bot maintenance free. The design stays portable
+in case it ever moves to Postgres:
+  • All SQL lives in this file; no other module writes SQL.
+  • Placeholders go through self.ph (SQLite "?", Postgres "%s").
+  • Time columns are epoch seconds (REAL), so there is no timezone ambiguity.
+  • The schema version lives in a `schema_meta` table, not in user_version.
 
-Postgres'e geçiş için tasarım kuralları (ölçek büyürse):
-  • Tüm SQL bu dosyada toplanır — başka hiçbir modül SQL yazmaz.
-  • Placeholder olarak self.ph kullanılır (SQLite "?", Postgres "%s").
-  • SQLite'a özel sözdizimi yok: AUTOINCREMENT, INSERT OR REPLACE gibi
-    ifadeler yerine taşınabilir ANSI karşılıkları tercih edilir.
-  • Zaman alanları epoch saniye (REAL) — zaman dilimi belirsizliği yok,
-    her iki veritabanında da aynı çalışır.
-  • Şema sürümü user_version yerine ayrı `schema_meta` tablosunda tutulur.
-
-Eşzamanlılık: bot tek süreç + asyncio. Bağlantı paylaşılır, yazmalar bir
-kilit ile serileştirilir. Çağrılar bloklayıcıdır → asyncio.to_thread ile
-çağrılmalıdır (bkz. bot/handlers, asyncio.to_thread kullanımı).
+Concurrency: one process plus asyncio. The connection is shared and writes are
+serialised with a lock. Calls block, so they must run through asyncio.to_thread.
 """
 
 import logging
@@ -36,7 +30,7 @@ class Database:
     def __init__(self, db_path: Path):
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.ph = "?"  # Postgres'e geçişte "%s"
+        self.ph = "?"
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(
             str(self.path),
@@ -49,16 +43,16 @@ class Database:
 
     def _configure(self) -> None:
         with self._lock:
-            # WAL: okuma ve yazma birbirini bloklamaz — bot yanıt vermeye devam eder.
+            # WAL: readers and writers do not block each other.
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.execute("PRAGMA busy_timeout=15000")
 
-    # ── Şema ─────────────────────────────────────────────────────────────────
+    # ── Schema ───────────────────────────────────────────────────────────────
 
     def migrate(self) -> None:
-        """Şemayı oluşturur/günceller. Tekrar çağrılması güvenlidir."""
+        """Creates or updates the schema. Safe to call repeatedly."""
         with self._lock:
             cur = self._conn.cursor()
 
@@ -69,10 +63,8 @@ class Database:
                 )
             """)
 
-            # ── Kullanıcılar ──
-            # broadcast_opt_out: Faz 3 duyuru sistemi bunu okuyacak.
-            # is_blocked: kullanıcı botu engellediyse duyuru gönderilmez
-            #             (Telegram "bot was blocked" hatasında işaretlenir).
+            # broadcast_opt_out: user turned announcements off.
+            # is_blocked: user blocked the bot, so broadcasts skip them.
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id            INTEGER PRIMARY KEY,
@@ -87,7 +79,6 @@ class Database:
                 )
             """)
 
-            # ── Sohbetler (özel + grup) ──
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS chats (
                     chat_id            INTEGER PRIMARY KEY,
@@ -101,7 +92,6 @@ class Database:
                 )
             """)
 
-            # ── Platform bazlı sayaç (chats.json'daki JSON blob'un normali) ──
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS chat_platforms (
                     chat_id   INTEGER NOT NULL,
@@ -111,7 +101,6 @@ class Database:
                 )
             """)
 
-            # ── İndirme geçmişi (analitik + hata takibi) ──
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS downloads (
                     id          INTEGER PRIMARY KEY,
@@ -145,7 +134,7 @@ class Database:
             )
             self._conn.commit()
 
-    # ── Düşük seviye yardımcılar ─────────────────────────────────────────────
+    # ── Low level helpers ────────────────────────────────────────────────────
 
     def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self._lock:
@@ -162,7 +151,7 @@ class Database:
         rows = self.query(sql, params)
         return rows[0] if rows else None
 
-    # ── Kullanıcı ────────────────────────────────────────────────────────────
+    # ── Users ────────────────────────────────────────────────────────────────
 
     def touch_user(
         self,
@@ -172,7 +161,6 @@ class Database:
         first_name: str | None = None,
         language: str | None = None,
     ) -> None:
-        """Kullanıcıyı kaydeder/günceller (her etkileşimde çağrılır)."""
         now = time.time()
         with self._lock:
             cur = self._conn.cursor()
@@ -206,14 +194,13 @@ class Database:
         )
 
     def set_broadcast_opt_out(self, *, user_id: int, opt_out: bool) -> None:
-        """Kullanıcının duyuru tercihi (Faz 3)."""
         self.execute(
             f"UPDATE users SET broadcast_opt_out = {self.ph} WHERE user_id = {self.ph}",
             (1 if opt_out else 0, user_id),
         )
 
     def mark_blocked(self, *, user_id: int | None = None, chat_id: int | None = None) -> None:
-        """Telegram 'bot engellendi' dediğinde çağrılır — duyuru listesinden düşer."""
+        """Called when Telegram reports the bot was blocked or kicked."""
         if user_id is not None:
             self.execute(
                 f"UPDATE users SET is_blocked = 1 WHERE user_id = {self.ph}", (user_id,)
@@ -223,7 +210,7 @@ class Database:
                 f"UPDATE chats SET is_blocked = 1 WHERE chat_id = {self.ph}", (chat_id,)
             )
 
-    # ── Sohbet ───────────────────────────────────────────────────────────────
+    # ── Chats ────────────────────────────────────────────────────────────────
 
     def touch_chat(
         self,
@@ -255,7 +242,7 @@ class Database:
                 )
             self._conn.commit()
 
-    # ── İndirme kaydı ────────────────────────────────────────────────────────
+    # ── Download history ─────────────────────────────────────────────────────
 
     def record_download(
         self,
@@ -274,10 +261,10 @@ class Database:
         chat_type: str | None = None,
     ) -> None:
         """
-        Bir indirmeyi kaydeder ve ilgili sayaçları günceller.
+        Records a download and updates the counters.
 
-        Başarılı indirmelerde kullanıcı/sohbet toplamları artar; hatalı
-        denemeler yalnızca downloads tablosuna yazılır (istatistik şişmesin).
+        Only successful downloads increase the user/chat totals; failed
+        attempts are stored in `downloads` alone.
         """
         now = time.time()
 
@@ -310,7 +297,7 @@ class Database:
                         f"WHERE chat_id = {self.ph}", (chat_id,)
                     )
                 if chat_id and platform:
-                    # Taşınabilir upsert: önce güncelle, etkilenen satır yoksa ekle.
+                    # Portable upsert: update first, insert when nothing matched.
                     cur.execute(
                         f"""UPDATE chat_platforms SET count = count + 1
                             WHERE chat_id = {self.ph} AND platform = {self.ph}""",
@@ -325,17 +312,12 @@ class Database:
 
             self._conn.commit()
 
-    # ── Duyuru hedefleri (Faz 3) ─────────────────────────────────────────────
+    # ── Broadcast targets ────────────────────────────────────────────────────
 
     def broadcast_targets(self, *, kind: str = "all") -> list[int]:
         """
-        Duyuru gönderilecek hedefler.
-
-        kind: "users"   → yalnızca özel sohbetler (kullanıcılar)
-              "groups"  → yalnızca gruplar
-              "all"     → ikisi de
-
-        Opt-out yapmış ve botu engellemiş olanlar hariç tutulur.
+        kind: "users" (private chats), "groups", or "all".
+        Opted-out and unreachable targets are excluded.
         """
         targets: list[int] = []
 
@@ -358,7 +340,7 @@ class Database:
 
         return targets
 
-    # ── İstatistik ───────────────────────────────────────────────────────────
+    # ── Statistics ───────────────────────────────────────────────────────────
 
     def stats(self) -> dict[str, Any]:
         def scalar(sql: str, default: Any = 0) -> Any:
@@ -393,12 +375,7 @@ class Database:
         )
 
     def search_users(self, term: str, limit: int = 10) -> list[dict[str, Any]]:
-        """
-        Kullanıcı adı, ad veya ID ile arama (admin paneli).
-
-        Sayı girilirse önce tam ID eşleşmesi denenir; bulunamazsa metin
-        araması yapılır.
-        """
+        """Search by username, first name or id (admin panel)."""
         term = (term or "").strip().lstrip("@")
         if not term:
             return []
@@ -439,7 +416,6 @@ class Database:
         )
 
     def user_downloads(self, user_id: int, limit: int = 5) -> list[dict[str, Any]]:
-        """Bir kullanıcının son indirmeleri (profil ekranı)."""
         return self.query(
             f"""SELECT platform, result, created_at, file_size FROM downloads
                 WHERE user_id = {self.ph} ORDER BY created_at DESC LIMIT {self.ph}""",

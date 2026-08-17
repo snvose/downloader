@@ -87,14 +87,14 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     ok = manager.cancel_user_job(user_id)
 
-    # Bekleyen format menüsü de iptal kapsamındadır. Önceden /cancel bunu
-    # görmüyordu: kullanıcı menüyü açıp indirmeyi başlatmadan /cancel yazınca
-    # "iptal edilecek işlem yok" yanıtı alıyor, menü de ekranda kalıyordu.
+    # A pending format menu counts as active too. Previously /cancel missed
+    # it: opening the menu without picking a format and sending /cancel said
+    # "nothing to cancel" while the menu stayed on screen.
     pending_cancelled = bool(
         await clear_user_pending(context.application, user_id)
     )
 
-    # Aktif bir playlist oturumu varsa onu da iptal et (item döngüsü durur).
+    # Cancel any active playlist session too (stops the item loop).
     playlist_cancelled = False
     for pjob in context.application.bot_data.get("playlist_sessions", {}).values():
         if pjob.get("user_id") == user_id and not pjob.get("cancelled"):
@@ -149,8 +149,8 @@ async def ses_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # Spotify: yalnızca tekil şarkı (track) desteklenir; worker şarkıyı
-    # YouTube'da bulup ses olarak indirir. Albüm/playlist desteklenmez.
+    # Spotify: only single tracks are supported; the worker looks the track
+    # up on YouTube and downloads it as audio. Albums/playlists are not.
     if is_spotify_url(url) and "/track/" not in url.lower():
         await safe_reply(
             update.message,
@@ -168,9 +168,9 @@ async def ses_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     chat = update.effective_chat
     is_admin = permissions.is_admin(user.id)
 
-    # ── Canlı yayın geçici banı ───────────────────────────────────────────────
-    # BYPASS: bu kontrol yalnızca link handler'ında vardı; canlı yayın spamı
-    # yüzünden banlanan kullanıcı /ses ile indirmeye devam edebiliyordu.
+    # ── Livestream temporary ban ────────────────────────────────────────────
+    # This check used to live only in the link handler; a user banned for
+    # livestream spam could keep downloading through /audio.
     live_guard = bot_data.get("live_guard")
     if live_guard and not is_admin:
         import asyncio as _asyncio
@@ -185,7 +185,7 @@ async def ses_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
             return
 
-    # Kullanıcı/sohbet kaydı (duyuru listesi + analitik) — link akışıyla aynı.
+    # User/chat record (broadcast list + analytics) — same as the link flow.
     activity = bot_data.get("activity_buffer")
     if activity:
         try:
@@ -197,20 +197,17 @@ async def ses_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 chat.id, title=getattr(chat, "title", None) or "", chat_type=chat.type,
             )
         except Exception:
-            logger.exception("Aktivite kaydı başarısız (/ses)")
+            logger.exception("Activity record failed (/audio)")
 
-    # Bakım modu: indirme yapılmaz, sabit mesaj döner (admin hariç).
     if state.is_maintenance() and not is_admin:
         await safe_reply(update.message, t("maintenance"), reply_to_message_id=update.message.message_id)
         return
 
-    # Safe mode: sessiz çalışma (mesaj/yazıyor yok).
     silent = state.is_safe()
-    # Ses her zaman audio_best modunda — cache lookup/store ile hizalı.
+    # /audio always uses audio_best, matching the cache lookup/store key.
     audio_mode = "audio_best"
 
-    # Cache: aynı şarkı daha önce indirildiyse yeniden indirme.
-    from bot.handlers.links import _try_serve_from_cache  # döngüsel import önlemi
+    from bot.handlers.links import _try_serve_from_cache  # avoids a circular import
     if not manager.get_user_active_job(user.id):
         served = await _try_serve_from_cache(
             context, url=url, mode=audio_mode, chat=chat, message=update.message, silent=silent,
@@ -227,7 +224,6 @@ async def ses_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
         return
 
-    # Safe mode: durum mesajı göstermeden sessizce indir.
     if silent:
         try:
             manager.start_download(
@@ -239,9 +235,9 @@ async def ses_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 chat_title=getattr(chat, "title", None), chat_type=chat.type,
             )
         except Exception:
-            # Sessiz mod kullanıcıya mesaj göndermez ama hata yutulmamalı;
-            # aksi halde indirme hiç başlamadığında iz kalmıyordu.
-            logger.exception("Safe mode /ses indirmesi başlatılamadı | url=%s", url)
+            # Safe mode never messages the user, but the failure must not be
+            # swallowed silently, or a failed start would leave no trace.
+            logger.exception("Safe mode /audio download failed to start | url=%s", url)
         return
 
     wait_msg = await safe_reply(
@@ -271,16 +267,14 @@ async def ses_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             disable_web_page_preview=True,
         )
 
-    except Exception as exc:
+    except Exception:
         await safe_message_edit(wait_msg, t("job_start_failed"))
 
 
 async def duyuru_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    /duyurular — kullanıcı duyuru (broadcast) tercihini değiştirir.
+    """/broadcasts — toggles the user's broadcast (announcement) preference.
 
-    Faz 3 duyuru sistemi bu tercihi okur: opt-out yapan kullanıcılara
-    duyuru gönderilmez (bkz. Database.broadcast_targets).
+    Database.broadcast_targets() reads this: opted-out users are skipped.
     """
     if not update.message or not update.effective_user:
         return

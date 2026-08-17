@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 """
-bot/downloader/sources.py — indirme kaynağı öncelik yönetimi.
+Download source priority.
 
-Bot üç kaynaktan indirebilir:
-    cobalt    — kendi barındırdığın cobalt instance'ı (hızlı, sunucu taraflı)
-    ytdlp     — yt-dlp (en geniş platform desteği)
-    gallerydl — gallery-dl (galeri/çoklu görsel içerikte güçlü)
+The bot can download from three sources:
+    cobalt    — your self-hosted cobalt instance (fast, server-side)
+    ytdlp     — yt-dlp (widest platform support)
+    gallerydl — gallery-dl (strong for galleries / multi-image posts)
 
-Sıra SABİT KODLANMAZ; data/sources.json'dan okunur ve platform bazında
-değiştirilebilir. Dosya yoksa varsayılan sıra kullanılır ve dosya oluşturulur.
+The order is NOT hard-coded; it's read from data/sources.json and can be
+overridden per platform. If the file is missing, the defaults below are used
+and the file is created.
 
-Örnek data/sources.json:
+Example data/sources.json:
     {
       "default": ["ytdlp", "cobalt", "gallerydl"],
       "platforms": {
@@ -32,14 +33,15 @@ logger = logging.getLogger("downloader")
 
 KNOWN_SOURCES = ("cobalt", "ytdlp", "gallerydl")
 
-# ── Varsayılan öncelikler ────────────────────────────────────────────────────
-# Gerekçe:
-#   TikTok/Instagram/Twitter/Reddit/Pinterest → cobalt önce: bu platformlar
-#     sık HTML/imza değişikliği yapar; cobalt sunucu tarafında güncel kalır ve
-#     watermark'sız / çoklu medya (picker) sonuçlarını tek istekte verir.
-#   YouTube/YouTube Music → yt-dlp önce: format seçimi, altyazı, playlist ve
-#     ses kalitesi kontrolü yt-dlp'de çok daha ayrıntılı; bot menüsü buna dayalı.
-#   Diğer her şey → yt-dlp önce (en geniş kapsam), sonra cobalt.
+# ── Default priorities ───────────────────────────────────────────────────────
+# Rationale:
+#   TikTok/Instagram/Twitter/Reddit/Pinterest -> cobalt first: these platforms
+#     change their HTML/signing often; cobalt stays current server-side and
+#     returns watermark-free / multi-item (picker) results in one request.
+#   YouTube/YouTube Music -> yt-dlp first: format selection, subtitles,
+#     playlists and audio quality control are far more detailed in yt-dlp,
+#     and the bot's menu depends on that.
+#   Everything else -> yt-dlp first (widest coverage), then cobalt.
 DEFAULT_PRIORITY: dict[str, Any] = {
     "default": ["ytdlp", "cobalt", "gallerydl"],
     "platforms": {
@@ -58,7 +60,7 @@ DEFAULT_PRIORITY: dict[str, Any] = {
 
 
 def _sanitize(order: Any) -> list[str]:
-    """Bilinmeyen/yinelenen kaynak adlarını ayıklar."""
+    """Drops unknown/duplicate source names."""
     if not isinstance(order, list):
         return []
     clean: list[str] = []
@@ -70,7 +72,7 @@ def _sanitize(order: Any) -> list[str]:
 
 
 class SourcePriority:
-    """data/sources.json'u okur ve platform → kaynak sırası çözer."""
+    """Reads data/sources.json and resolves platform -> source order."""
 
     def __init__(self, data_dir: Path):
         self.file = Path(data_dir) / "sources.json"
@@ -82,8 +84,8 @@ class SourcePriority:
             write_json_atomic(self.file, DEFAULT_PRIORITY)
 
     def _load(self) -> dict[str, Any]:
-        # Dosya elle düzenlenebilsin diye mtime'a göre yeniden okunur
-        # (botu yeniden başlatmadan sıra değiştirilebilir).
+        # Re-read by mtime so the file can be edited by hand without
+        # restarting the bot.
         try:
             mtime = self.file.stat().st_mtime
         except OSError:
@@ -102,10 +104,10 @@ class SourcePriority:
 
     def for_platform(self, platform: str, *, available: set[str] | None = None) -> list[str]:
         """
-        Bir platform için denenecek kaynakları sırayla döner.
+        Returns the sources to try, in order, for a platform.
 
-        available: o an kullanılabilir kaynaklar (ör. cobalt yapılandırılmamışsa
-        listede olmaz). Böylece kapalı bir kaynak için boşuna deneme yapılmaz.
+        available: sources currently usable (e.g. cobalt is excluded when not
+        configured), so a disabled source is never tried in vain.
         """
         data = self._load()
 
@@ -118,13 +120,13 @@ class SourcePriority:
         if available is not None:
             order = [item for item in order if item in available]
 
-        # Hiçbir şey kalmadıysa yt-dlp'ye düş — bot her zaman bir kaynağa sahip olmalı.
+        # Nothing left: fall back to yt-dlp, the bot must always have a source.
         return order or ["ytdlp"]
 
     def describe(self) -> str:
-        """Admin paneli / log için okunur özet."""
+        """Readable summary for the admin panel / logs."""
         data = self._load()
-        lines = ["varsayılan: " + " → ".join(_sanitize(data.get("default")) or ["ytdlp"])]
+        lines = ["default: " + " → ".join(_sanitize(data.get("default")) or ["ytdlp"])]
         platforms = data.get("platforms") or {}
         if isinstance(platforms, dict):
             for name, order in sorted(platforms.items()):

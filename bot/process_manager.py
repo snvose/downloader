@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+"""
+Download job lifecycle: spawning worker processes, tracking them and killing
+the ones that overrun their limits.
+"""
+
 import logging
 import multiprocessing as mp
 import os
@@ -16,6 +21,14 @@ from .config import Config
 from .downloader.worker import worker_entry
 
 logger = logging.getLogger("downloader")
+
+
+class BusyError(RuntimeError):
+    """No free download slot right now."""
+
+
+class AlreadyRunningError(RuntimeError):
+    """This user already has an active download."""
 
 
 @dataclass
@@ -35,17 +48,17 @@ class Job:
     cancelled: bool = False
     last_edit_at: float = 0.0
     title: str = ""
-    # safe mode (sessiz gönderim) + detaylı loglama için bağlam
-    silent: bool = False                 # safe mode → kullanıcıya mesaj/bildirim yok
+    # Safe mode and detailed logging context
+    silent: bool = False
     username: str | None = None
     chat_title: str | None = None
     chat_type: str | None = None
-    started_at: float = field(default_factory=time.time)  # işlem süresi ölçümü
-    # watchdog durumu
+    started_at: float = field(default_factory=time.time)
+    # Watchdog state
     last_size_check: float = 0.0
     last_size: int = 0
     kill_reason: str = ""  # timeout | oversize | dead
-    exited_at: float = 0.0  # worker süreci ölü görüldüğü an (yarış koruması)
+    exited_at: float = 0.0  # when the worker was first seen dead (race guard)
 
 
 class ProcessManager:
@@ -80,6 +93,13 @@ class ProcessManager:
 
         return job
 
+    def active_download_dirs(self) -> list[Path]:
+        """Directories of running jobs — the daily cleanup must skip these."""
+        return [
+            job.download_dir for job in self.jobs.values()
+            if not job.done and not job.cancelled
+        ]
+
     def start_download(
         self,
         *,
@@ -95,18 +115,14 @@ class ProcessManager:
         chat_type: str | None = None,
         subtitle_lang: str = "",
     ) -> Job:
-        current = self.get_user_active_job(user_id)
-        if current:
-            raise RuntimeError("Bu kullanıcının aktif indirmesi var.")
+        if self.get_user_active_job(user_id):
+            raise AlreadyRunningError("This user already has an active download.")
 
         active_count = self.get_active_count()
         limit = int(getattr(self.config, "max_simultaneous_downloads", 3) or 3)
 
         if active_count >= limit:
-            raise RuntimeError(
-                f"Bot şu an meşgul. Maksimum {limit} eş zamanlı indirme yapılabilir. "
-                "Biraz sonra tekrar dene."
-            )
+            raise BusyError(f"All {limit} download slots are busy.")
 
         job_id = uuid.uuid4().hex[:12]
         download_dir = self.config.download_dir / job_id
@@ -119,8 +135,8 @@ class ProcessManager:
             "cookies_file": str(self.config.cookies_file),
             "mode": mode,
             "subtitle_lang": subtitle_lang,
-            # cobalt ayarları worker'a değer olarak geçilir (spawn context'te
-            # Config nesnesi paylaşılmaz).
+            # cobalt settings are passed by value: the spawn context does not
+            # share the Config object.
             "cobalt_api_url": getattr(self.config, "cobalt_api_url", "") or "",
             "cobalt_api_key": getattr(self.config, "cobalt_api_key", "") or "",
             "cobalt_timeout": getattr(self.config, "cobalt_timeout", 30),
@@ -170,13 +186,11 @@ class ProcessManager:
 
     def _kill_process_tree(self, job: Job) -> None:
         """
-        Worker'ı ve TÜM alt süreçlerini (özellikle ffmpeg) öldürür.
+        Kills the worker and all of its children, ffmpeg in particular.
 
-        Neden grup halinde: worker'a tek başına SIGTERM göndermek ffmpeg'i
-        öksüz bırakıyordu; init'e devrolan ffmpeg diske yazmaya devam ediyor,
-        bot onu artık göremiyor ve durduramıyordu. Worker os.setsid() ile
-        kendi grubunun lideri olduğu için burada tüm grubu tek seferde
-        sonlandırabiliyoruz.
+        The worker calls os.setsid(), so it leads its own process group and the
+        whole group can be signalled at once. Signalling the worker alone would
+        orphan ffmpeg, which would keep writing to disk unsupervised.
         """
         proc = job.process
         if not proc:
@@ -184,7 +198,6 @@ class ProcessManager:
 
         pid = getattr(proc, "pid", None)
 
-        # 1) Önce nazikçe: tüm gruba SIGTERM
         if pid:
             self._signal_group(pid, signal.SIGTERM)
 
@@ -195,7 +208,6 @@ class ProcessManager:
         except Exception:
             pass
 
-        # 2) Direnenler için: tüm gruba SIGKILL
         if pid:
             self._signal_group(pid, signal.SIGKILL)
 
@@ -208,13 +220,12 @@ class ProcessManager:
 
     @staticmethod
     def _signal_group(pid: int, sig: int) -> None:
-        """Worker'ın süreç grubuna sinyal gönderir (öksüz ffmpeg kalmasın)."""
         try:
             pgid = os.getpgid(pid)
         except (ProcessLookupError, PermissionError, OSError):
             return
 
-        # Botun kendi grubunu asla öldürme (worker setsid yapamamışsa).
+        # Never signal the bot's own group (in case setsid failed).
         try:
             if pgid == os.getpgrp():
                 return
@@ -238,6 +249,7 @@ class ProcessManager:
         self._kill_process_tree(job)
 
         self.cleanup_job_files(job_id)
+        self._join_process(job)
         self.jobs.pop(job_id, None)
 
         return True
@@ -249,13 +261,7 @@ class ProcessManager:
         return self.cancel_job(job.job_id)
 
     def cancel_chat_jobs(self, chat_id: int) -> int:
-        """
-        Bir sohbetteki tüm aktif işleri iptal eder; iptal edilen sayıyı döner.
-
-        Grup banlandığında o gruptaki indirmeler devam etmesin diye gerekli:
-        ban yalnızca yeni istekleri engelliyordu, o an sürenler bitene kadar
-        kaynak tüketmeye devam ediyordu.
-        """
+        """Cancels every active job in a chat; returns how many were cancelled."""
         targets = [
             job.job_id for job in list(self.jobs.values())
             if job.chat_id == int(chat_id) and not job.done and not job.cancelled
@@ -279,15 +285,12 @@ class ProcessManager:
 
     def reap(self) -> list[tuple[Job, str]]:
         """
-        Sınırı aşan işleri öldürür ve (job, sebep) listesi döner.
+        Kills jobs that exceed their limits and returns (job, reason) pairs.
 
-        Üç güvence — hiçbir tek iş botu ya da sunucuyu kilitleyemesin diye:
-          1) süre aşımı  → işlem çok uzun sürdü
-          2) boyut aşımı → tek iş diski doldurmaya çalışıyor
-          3) ölü süreç   → worker çöktü ama slot dolu kaldı
-
-        Bu, canlı yayın tespiti atlatılsa bile çalışan son savunmadır.
-        Çağıran: app.queue_consumer (her döngüde, ucuz).
+        Three guarantees, so no single job can lock up the bot or the server:
+          1) timeout  — the job ran for too long
+          2) oversize — one job is trying to fill the disk
+          3) dead     — the worker crashed but its slot stayed busy
         """
         killed: list[tuple[Job, str]] = []
         now = time.time()
@@ -306,14 +309,9 @@ class ProcessManager:
                 reason = "timeout"
 
             elif job.process and not job.process.is_alive():
-                # Süreç öldü ama done/error olayı hiç gelmedi (ör. OOM killer).
-                # Slot serbest bırakılmazsa kullanıcı sonsuza dek engellenir.
-                #
-                # DİKKAT: worker, "done" olayını kuyruğa koyduktan hemen sonra
-                # çıkar. Olay henüz tüketilmemişken süreci ölü görüp işi
-                # öldürürsek BAŞARILI bir indirmeyi çöpe atarız. Bu yüzden
-                # ölüm anını işaretleyip kısa bir süre bekliyoruz; olay bu
-                # sürede işlenirse iş zaten jobs'tan düşmüş olur.
+                # The worker exits right after putting "done" on the queue, so
+                # a process seen dead may still have a pending success event.
+                # Wait a little; if the event is consumed the job disappears.
                 if not job.exited_at:
                     job.exited_at = now
                     continue
@@ -321,7 +319,7 @@ class ProcessManager:
                     continue
                 reason = "dead"
 
-            # Boyut kontrolü diski tarar; her döngüde değil, 15 sn'de bir.
+            # The size check walks the disk, so only every 15 seconds.
             elif now - job.last_size_check > 15.0:
                 job.last_size_check = now
                 size = self._dir_size(job.download_dir)
@@ -333,7 +331,7 @@ class ProcessManager:
                 continue
 
             logger.error(
-                "WATCHDOG %s işi sonlandırıldı | sebep=%s | süre=%.0fs | boyut=%.1fMB | url=%s",
+                "WATCHDOG killed job %s | reason=%s | age=%.0fs | size=%.1fMB | url=%s",
                 job_id, reason, age, job.last_size / 1e6, job.source_url,
             )
 
@@ -358,7 +356,7 @@ class ProcessManager:
             pass
 
     def _join_process(self, job) -> None:
-        # Tamamlanan process'i join ederek zombi/semaphore birikimini önle
+        # Join finished processes so no zombies or semaphores pile up.
         proc = job.process
         try:
             if proc and proc.is_alive():
@@ -375,11 +373,14 @@ class ProcessManager:
 
         self.active_by_user.pop(job.user_id, None)
         self._join_process(job)
-        self.cleanup_job_files(job_id)
+        try:
+            shutil.rmtree(job.download_dir, ignore_errors=True)
+        except Exception:
+            pass
 
     def detach_job(self, job_id: str) -> None:
-        # Başarılı gönderimde iş kaydını kaldır ama dosyaları silme.
-        # Dosyalar cache disk-fallback'i ve günlük temizlik için diskte kalır.
+        # Successful upload: drop the job record but keep the files, they back
+        # the cache disk fallback until the daily cleanup.
         job = self.jobs.pop(job_id, None)
         if not job:
             return
@@ -387,14 +388,13 @@ class ProcessManager:
         self._join_process(job)
 
     def shutdown(self) -> None:
-        # /dur, refresh, owner toggle bunu çağırır: yalnızca aktif işleri iptal et.
-        # Queue'yu kapatma — bot çalışmaya devam ediyor (aksi halde /basla sonrası bozulur).
+        # Called by /stop, /refresh and the panel: cancel active jobs only.
+        # The queue stays open because the bot keeps running.
         for job_id in list(self.jobs.keys()):
             self.cancel_job(job_id)
 
     def close(self) -> None:
-        # Yalnızca uygulama tamamen kapanırken (post_shutdown) çağrılır.
-        # mp.Queue'yu düzgün kapat → sızdırılan semaphore uyarılarını azalt
+        # Only on full application shutdown.
         self.shutdown()
         try:
             self.queue.close()

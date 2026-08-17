@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 """
-bot/i18n.py — Çok dilli kullanıcı metinleri.
+Multi-language user-facing text.
 
-Bot dili global tek bir ayardır; admin /admin panelinden seçer ve
-data/bot_state.json içinde kalıcı tutulur. t(key, **fmt) geçerli dildeki
-metni döner; eksikse İngilizce, o da yoksa Türkçe metne düşer.
+The bot language is a single global setting, chosen by the admin from the
+/admin panel and persisted in data/bot_state.json. t(key, **fmt) returns the
+text for the current language, falling back to English and then to the key
+itself.
 """
 
 LANGUAGES: dict[str, str] = {
-    "tr": "Türkçe",
     "en": "English",
+    "tr": "Türkçe",
     "ru": "Русский",
     "de": "Deutsch",
     "es": "Español",
@@ -18,7 +19,7 @@ LANGUAGES: dict[str, str] = {
     "ar": "العربية",
 }
 
-DEFAULT_LANG = "tr"
+DEFAULT_LANG = "en"
 _current = DEFAULT_LANG
 
 
@@ -43,10 +44,10 @@ def t(key: str, **fmt) -> str:
     return text
 
 
-# ── Çeviri tablosu ───────────────────────────────────────────────────────────
-# Her anahtar: { dil_kodu: metin }. Placeholder'lar {ad} biçimindedir.
+# ── Translation table ────────────────────────────────────────────────────────
+# Each key: { lang_code: text }. Placeholders use {name} format syntax.
 _STRINGS: dict[str, dict[str, str]] = {
-    # ── Durum mesajları ──
+    # ── Status messages ──
     "analyzing": {
         "tr": "Link analiz ediliyor...", "en": "Analyzing link...",
         "ru": "Анализ ссылки...", "de": "Link wird analysiert...",
@@ -96,7 +97,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ar": "جارٍ تحضير أغنية Spotify...",
     },
 
-    # ── /start ve /help ──
+    # ── /start and /help ──
     "start_desc": {
         "tr": "Medya bağlantılarını hızlı ve sade şekilde indirmek için hazırlanmıştır.\nLink gönder, bot içeriği hazırlayıp sohbete yüklesin.",
         "en": "Download media links quickly and cleanly.\nSend a link and the bot will fetch and upload it.",
@@ -169,7 +170,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ar": "ألبومات/قوائم تشغيل Spotify غير مدعومة. روابط الأغاني الفردية فقط.",
     },
 
-    # ── Butonlar ──
+    # ── Buttons ──
     "btn_details": {
         "tr": "Detaylar", "en": "Details", "ru": "Подробнее", "de": "Details",
         "es": "Detalles", "fr": "Détails", "ar": "التفاصيل",
@@ -179,7 +180,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "es": "Fuente", "fr": "Source", "ar": "المصدر",
     },
 
-    # ── Medya bilgi alanları ──
+    # ── Media info fields ──
     "info_suffix": {
         "tr": "Bilgileri", "en": "Info", "ru": "Информация", "de": "Infos",
         "es": "Información", "fr": "Infos", "ar": "معلومات",
@@ -231,27 +232,27 @@ _STRINGS: dict[str, dict[str, str]] = {
         "es": "Desconocido", "fr": "Inconnu", "ar": "غير معروف",
     },
 
-    # ── Duyuru tercihi ──
+    # ── Broadcast opt in/out ──
     "broadcast_opt_out": {
-        "tr": "🔕 <b>Duyurular kapatıldı.</b>\nArtık bot duyurularını almayacaksın. Tekrar açmak için yine /duyurular yaz.",
-        "en": "🔕 <b>Announcements turned off.</b>\nYou will no longer receive bot announcements. Send /duyurular again to turn them back on.",
-        "ru": "🔕 <b>Объявления отключены.</b>\nВы больше не будете получать объявления. Отправьте /duyurular снова, чтобы включить.",
-        "de": "🔕 <b>Ankündigungen deaktiviert.</b>\nDu erhältst keine Bot-Ankündigungen mehr. Sende /duyurular erneut zum Aktivieren.",
-        "es": "🔕 <b>Anuncios desactivados.</b>\nYa no recibirás anuncios del bot. Envía /duyurular de nuevo para reactivarlos.",
-        "fr": "🔕 <b>Annonces désactivées.</b>\nVous ne recevrez plus d'annonces. Renvoyez /duyurular pour les réactiver.",
-        "ar": "🔕 <b>تم إيقاف الإعلانات.</b>\nلن تتلقى إعلانات البوت بعد الآن. أرسل /duyurular مرة أخرى لتفعيلها.",
+        "tr": "🔕 <b>Duyurular kapatıldı.</b>\nArtık bot duyurularını almayacaksın. Tekrar açmak için yine /broadcasts yaz.",
+        "en": "🔕 <b>Announcements turned off.</b>\nYou will no longer receive bot announcements. Send /broadcasts again to turn them back on.",
+        "ru": "🔕 <b>Объявления отключены.</b>\nВы больше не будете получать объявления. Отправьте /broadcasts снова, чтобы включить.",
+        "de": "🔕 <b>Ankündigungen deaktiviert.</b>\nDu erhältst keine Bot-Ankündigungen mehr. Sende /broadcasts erneut zum Aktivieren.",
+        "es": "🔕 <b>Anuncios desactivados.</b>\nYa no recibirás anuncios del bot. Envía /broadcasts de nuevo para reactivarlos.",
+        "fr": "🔕 <b>Annonces désactivées.</b>\nVous ne recevrez plus d'annonces. Renvoyez /broadcasts pour les réactiver.",
+        "ar": "🔕 <b>تم إيقاف الإعلانات.</b>\nلن تتلقى إعلانات البوت بعد الآن. أرسل /broadcasts مرة أخرى لتفعيلها.",
     },
     "broadcast_opt_in": {
-        "tr": "🔔 <b>Duyurular açıldı.</b>\nBot duyurularını alacaksın. Kapatmak için /duyurular yaz.",
-        "en": "🔔 <b>Announcements turned on.</b>\nYou will receive bot announcements. Send /duyurular to turn them off.",
-        "ru": "🔔 <b>Объявления включены.</b>\nВы будете получать объявления. Отправьте /duyurular, чтобы отключить.",
-        "de": "🔔 <b>Ankündigungen aktiviert.</b>\nDu erhältst Bot-Ankündigungen. Sende /duyurular zum Deaktivieren.",
-        "es": "🔔 <b>Anuncios activados.</b>\nRecibirás anuncios del bot. Envía /duyurular para desactivarlos.",
-        "fr": "🔔 <b>Annonces activées.</b>\nVous recevrez les annonces. Envoyez /duyurular pour les désactiver.",
-        "ar": "🔔 <b>تم تفعيل الإعلانات.</b>\nستتلقى إعلانات البوت. أرسل /duyurular لإيقافها.",
+        "tr": "🔔 <b>Duyurular açıldı.</b>\nBot duyurularını alacaksın. Kapatmak için /broadcasts yaz.",
+        "en": "🔔 <b>Announcements turned on.</b>\nYou will receive bot announcements. Send /broadcasts to turn them off.",
+        "ru": "🔔 <b>Объявления включены.</b>\nВы будете получать объявления. Отправьте /broadcasts, чтобы отключить.",
+        "de": "🔔 <b>Ankündigungen aktiviert.</b>\nDu erhältst Bot-Ankündigungen. Sende /broadcasts zum Deaktivieren.",
+        "es": "🔔 <b>Anuncios activados.</b>\nRecibirás anuncios del bot. Envía /broadcasts para desactivarlos.",
+        "fr": "🔔 <b>Annonces activées.</b>\nVous recevrez les annonces. Envoyez /broadcasts pour les désactiver.",
+        "ar": "🔔 <b>تم تفعيل الإعلانات.</b>\nستتلقى إعلانات البوت. أرسل /broadcasts لإيقافها.",
     },
 
-    # ── Canlı yayın koruması ──
+    # ── Livestream protection ──
     "live_not_supported": {
         "tr": "🔴 <b>Canlı yayınlar desteklenmiyor.</b>\nCanlı yayınların sonu olmadığı için indirilemez. Yayın bittikten sonra kaydını gönderebilirsin.",
         "en": "🔴 <b>Live streams are not supported.</b>\nA live stream never ends, so it cannot be downloaded. Send the recording once the stream is over.",
@@ -316,7 +317,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ar": "❌ <b>فشل التنزيل.</b>\nانتهت العملية بشكل غير متوقع. حاول مرة أخرى.",
     },
 
-    # ── Uyarı / hata mesajları ──
+    # ── Warning / error messages ──
     "wait_active": {
         "tr": "Önce aktif indirmenin bitmesini bekle veya /cancel yaz.",
         "en": "Wait for the active download to finish, or send /cancel.",
@@ -389,14 +390,23 @@ _STRINGS: dict[str, dict[str, str]] = {
         "fr": "Impossible d'envoyer les fichiers à Telegram. Erreur serveur ou API.",
         "ar": "تعذّر رفع الملفات إلى تيليجرام. خطأ في الخادم أو واجهة تيليجرام.",
     },
+    "flood_limit": {
+        "tr": "⏳ Telegram şu anda çok yoğun (flood limiti). Lütfen birkaç dakika sonra tekrar deneyin.",
+        "en": "⏳ Telegram is rate-limiting the bot right now. Please try again in a few minutes.",
+        "ru": "⏳ Telegram сейчас ограничивает частоту запросов. Повторите через несколько минут.",
+        "de": "⏳ Telegram limitiert den Bot gerade. Bitte versuche es in ein paar Minuten erneut.",
+        "es": "⏳ Telegram está limitando la frecuencia ahora mismo. Inténtalo de nuevo en unos minutos.",
+        "fr": "⏳ Telegram limite actuellement la fréquence des messages. Réessayez dans quelques minutes.",
+        "ar": "⏳ يقوم تيليجرام حاليًا بتقييد المعدل. يُرجى المحاولة مرة أخرى بعد بضع دقائق.",
+    },
     "ses_usage": {
-        "tr": "Kullanım: <code>/ses link</code>\nLinke cevap olarak sadece <code>/ses</code> de yazabilirsin.",
-        "en": "Usage: <code>/ses link</code>\nYou can also reply <code>/ses</code> to a link.",
-        "ru": "Использование: <code>/ses ссылка</code>\nМожно также ответить <code>/ses</code> на ссылку.",
-        "de": "Verwendung: <code>/ses Link</code>\nDu kannst auch mit <code>/ses</code> auf einen Link antworten.",
-        "es": "Uso: <code>/ses enlace</code>\nTambién puedes responder <code>/ses</code> a un enlace.",
-        "fr": "Usage : <code>/ses lien</code>\nVous pouvez aussi répondre <code>/ses</code> à un lien.",
-        "ar": "الاستخدام: <code>/ses رابط</code>\nيمكنك أيضًا الرد بـ <code>/ses</code> على رابط.",
+        "tr": "Kullanım: <code>/audio link</code>\nLinke cevap olarak sadece <code>/audio</code> de yazabilirsin.",
+        "en": "Usage: <code>/audio link</code>\nYou can also reply <code>/audio</code> to a link.",
+        "ru": "Использование: <code>/audio ссылка</code>\nМожно также ответить <code>/audio</code> на ссылку.",
+        "de": "Verwendung: <code>/audio Link</code>\nDu kannst auch mit <code>/audio</code> auf einen Link antworten.",
+        "es": "Uso: <code>/audio enlace</code>\nTambién puedes responder <code>/audio</code> a un enlace.",
+        "fr": "Usage : <code>/audio lien</code>\nVous pouvez aussi répondre <code>/audio</code> à un lien.",
+        "ar": "الاستخدام: <code>/audio رابط</code>\nيمكنك أيضًا الرد بـ <code>/audio</code> على رابط.",
     },
     "too_large": {
         "tr": "Dosya gönderilemedi.\n\nDosya: {name}\nBoyut: {size}\nSebep: {reason}.",
@@ -419,8 +429,32 @@ _STRINGS: dict[str, dict[str, str]] = {
         "es": "Lista de reproducción cancelada.", "fr": "Playlist annulée.",
         "ar": "تم إلغاء قائمة التشغيل.",
     },
+    "banned_user": {
+        "tr": "Bu kullanıcı botu kullanamaz.", "en": "This user cannot use the bot.",
+        "ru": "Этот пользователь не может использовать бота.", "de": "Dieser Nutzer kann den Bot nicht verwenden.",
+        "es": "Este usuario no puede usar el bot.", "fr": "Cet utilisateur ne peut pas utiliser le bot.",
+        "ar": "لا يمكن لهذا المستخدم استخدام البوت.",
+    },
+    "banned_group": {
+        "tr": "Bot bu grupta kullanılamıyor.", "en": "The bot cannot be used in this group.",
+        "ru": "Бота нельзя использовать в этой группе.", "de": "Der Bot kann in dieser Gruppe nicht verwendet werden.",
+        "es": "El bot no se puede usar en este grupo.", "fr": "Le bot ne peut pas être utilisé dans ce groupe.",
+        "ar": "لا يمكن استخدام البوت في هذه المجموعة.",
+    },
+    "unit_days": {
+        "tr": "gün", "en": "days", "ru": "дн.", "de": "Tage",
+        "es": "días", "fr": "jours", "ar": "أيام",
+    },
+    "unit_hours": {
+        "tr": "saat", "en": "hours", "ru": "ч.", "de": "Stunden",
+        "es": "horas", "fr": "heures", "ar": "ساعات",
+    },
+    "unit_minutes": {
+        "tr": "dakika", "en": "minutes", "ru": "мин.", "de": "Minuten",
+        "es": "minutos", "fr": "minutes", "ar": "دقائق",
+    },
 
-    # ── safe_public_error karşılıkları ──
+    # ── safe_public_error mappings ──
     "err_tiktok_403": {
         "tr": "TikTok bu bağlantıya erişim engeli verdi. Farklı yöntemler denendi ama erişilemedi.",
         "en": "TikTok blocked access to this link. Several methods were tried without success.",

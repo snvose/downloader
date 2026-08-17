@@ -10,21 +10,21 @@ from .i18n import t
 from .utils import human_bytes, platform_name
 
 
-# Owner / topluluk linkleri .env'den okunur (configure_branding ile set edilir).
+# Owner/community links come from .env (set via configure_branding).
 _BRANDING = {
     "show_links": False,
     "owner_link": "",
     "community_link": "",
-    "community_label": "Topluluk",
+    "community_label": "Community",
 }
 
 
 def configure_branding(config) -> None:
-    """Başlangıçta .env değerlerini UI'a aktarır."""
+    """Copies the .env branding values into the UI at startup."""
     _BRANDING["show_links"] = bool(getattr(config, "show_links", False))
     _BRANDING["owner_link"] = getattr(config, "owner_link", "") or ""
     _BRANDING["community_link"] = getattr(config, "community_link", "") or ""
-    _BRANDING["community_label"] = getattr(config, "community_label", "Topluluk") or "Topluluk"
+    _BRANDING["community_label"] = getattr(config, "community_label", "Community") or "Community"
 
 
 def esc(value: object) -> str:
@@ -43,9 +43,9 @@ def human_duration(seconds: Any) -> str:
         return t("unknown")
 
 
-# Platform adı → emoji slot anahtarı.
-# Tek kaynak: hem medya altındaki ikon hem /help listesi bunu kullanır,
-# yani admin bir slota premium emoji atadığında iki yerde birden değişir.
+# Platform name -> emoji slot key.
+# Single source of truth: both the icon under a media post and the /help
+# listing use this, so assigning a premium emoji to a slot updates both.
 PLATFORM_SLOTS: list[tuple[str, str]] = [
     ("YouTube", "icon_youtube"),
     ("YouTube Music", "icon_ytmusic"),
@@ -81,7 +81,7 @@ _PLATFORM_SLOT_MAP = dict(PLATFORM_SLOTS)
 
 
 def platform_icon(platform: str) -> str:
-    """Medya altında gösterilen platform ikonu (premium emoji atanabilir)."""
+    """Platform icon shown under a media post (assignable to a premium emoji)."""
     key = _PLATFORM_SLOT_MAP.get(platform)
     return em(key) if key else em("icon_link")
 
@@ -95,11 +95,10 @@ def start_text(bot_name: str) -> str:
 
 def help_text() -> str:
     """
-    Yardım ekranı.
+    Help screen.
 
-    Platform listesi bot/utils.py'deki gerçek desteğe göre gruplanmıştır.
-    Yeni platform eklenirse SUPPORTED_DOMAINS ile birlikte burası da
-    güncellenmelidir.
+    The platform list is grouped to match the real support in
+    bot/utils.py; update both together when adding a new platform.
     """
     platforms = "\n".join(
         f"{em(key)} {name}" for name, key in PLATFORM_SLOTS
@@ -110,19 +109,18 @@ def help_text() -> str:
         f"<b>{t('help_platforms')}</b>\n"
         f"{platforms}\n\n"
         f"<b>{t('help_commands')}</b>\n"
-        f"<code>/ses</code> — {t('help_ses')}\n"
+        f"<code>/audio</code> — {t('help_ses')}\n"
         f"<code>/cancel</code> — {t('help_cancel')}\n"
-        f"<code>/duyurular</code> — {t('help_duyurular')}"
+        f"<code>/broadcasts</code> — {t('help_duyurular')}"
     )
 
 
 def start_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(eb("menu_help", "Yardım"), callback_data="menu|help")],
+        [InlineKeyboardButton(eb("menu_help", "Help"), callback_data="menu|help")],
     ]
 
-    # Owner/topluluk linkleri yalnızca .env'de etkinleştirildiyse ve link
-    # tanımlıysa gösterilir.
+    # Owner/community links only show up when enabled in .env and defined.
     if _BRANDING["show_links"]:
         link_row = []
         if _BRANDING["owner_link"]:
@@ -135,14 +133,14 @@ def start_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
             rows.append(link_row)
 
     if is_owner:
-        rows.append([InlineKeyboardButton(eb("menu_owner", "Admin Paneli"), callback_data="menu|owner")])
+        rows.append([InlineKeyboardButton(eb("menu_owner", "Admin panel"), callback_data="menu|owner")])
 
     return InlineKeyboardMarkup(rows)
 
 
 def back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(eb("menu_back", "Geri"), callback_data="menu|main")]
+        [InlineKeyboardButton(eb("menu_back", "Back"), callback_data="menu|main")]
     ])
 
 
@@ -188,17 +186,16 @@ def cancelled_text() -> str:
 
 
 def final_caption(title: str, source_url: str) -> str:
-    # Sade arayüz: medyanın altında YALNIZCA platform logosu + platform adı.
-    # Başlık/açıklama gibi detaylar caption'a konmaz; "Detaylar" butonuyla açılır.
+    # Clean interface: only the platform logo + name go under the media.
+    # Title/description live behind the "Details" button instead.
     platform = platform_name(source_url)
     icon = platform_icon(platform)
     return f"{icon} <b>{esc(platform)}</b>"
 
 
 def build_post_keyboard(post_id: str, source_url: str, has_description: bool = True) -> InlineKeyboardMarkup:
-    # Sade arayüz: tek "Detaylar" butonu. Video bilgisi + açıklama
-    # varsayılan gizli; kullanıcı basınca açılır. Fazla buton kaldırıldı.
-    # has_description geriye dönük uyumluluk için tutulur (detay metninde kullanılır).
+    # Clean interface: a single "Details" button. Video info + description
+    # are hidden by default and expand on tap.
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(eb("btn_info", t("btn_details")), callback_data=f"post|{post_id}|details")],
         [InlineKeyboardButton(eb("btn_source", t("btn_source")), url=source_url)],
@@ -244,9 +241,9 @@ def media_info_text(post: dict) -> str:
     ]
 
     if info.get("view_count"):
-        lines.append(f"{em('field_views')} <b>{t('f_views')}:</b> {int(info['view_count']):,}".replace(",", "."))
+        lines.append(f"{em('field_views')} <b>{t('f_views')}:</b> {int(info['view_count']):,}")
     if info.get("like_count"):
-        lines.append(f"{em('field_likes')} <b>{t('f_likes')}:</b> {int(info['like_count']):,}".replace(",", "."))
+        lines.append(f"{em('field_likes')} <b>{t('f_likes')}:</b> {int(info['like_count']):,}")
 
     return "\n".join(lines)[:4096]
 
@@ -296,8 +293,8 @@ def description_messages(post: dict) -> list[str]:
 
 
 def details_messages(post: dict) -> list[str]:
-    # Sade arayüz: tek "Detaylar" butonu → video bilgisi + (varsa) açıklama
-    # birlikte gönderilir. Varsayılan gizli, basınca açılır.
+    # Clean interface: the single "Details" button sends video info +
+    # description (if any) together, hidden by default.
     messages = [media_info_text(post)]
     messages.extend(description_messages(post))
     return messages
@@ -305,8 +302,8 @@ def details_messages(post: dict) -> list[str]:
 
 def suspended_facebook_text() -> str:
     return (
-        f"{em('icon_facebook')} <b>Facebook geçici olarak askıda.</b>\n\n"
-        "Bu platform için Playwright tabanlı yeni fallback daha sonra eklenecek."
+        f"{em('icon_facebook')} <b>Facebook is temporarily suspended.</b>\n\n"
+        "A Playwright-based fallback for this platform is planned."
     )
 
 

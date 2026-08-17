@@ -1,26 +1,28 @@
 from __future__ import annotations
 
 """
-bot/handlers/gate.py — banlı kullanıcı/grup için global giriş kapısı.
+Global ban gate for banned users/groups.
 
-Ban kontrolü önceden her handler'ın kendi içindeydi ve bu yüzden eksikti:
-buton (callback) handler'ında hiç yoktu, /start ve /cancel yalnızca
-kullanıcı banına bakıyordu, grup banına bakmıyordu. Yani banlı bir grupta
-menü butonları ve komutların bir kısmı çalışmaya devam ediyordu.
+Ban checks used to live inside each handler and were incomplete: the button
+(callback) handler had none at all, /start and /cancel only checked the user
+ban and never the group ban. A banned group could still use menu buttons and
+some commands.
 
-Bu kapı en düşük handler grubunda (-2) çalışır ve banlıysa
-ApplicationHandlerStop ile diğer TÜM handler'ları durdurur. Böylece yeni
-bir handler eklendiğinde ban kontrolünü unutmak mümkün değil.
+This gate runs at the lowest handler group (-2) and raises
+ApplicationHandlerStop when banned, stopping every other handler. A newly
+added handler can never forget the ban check.
 
-Bakım modu KASITLI olarak burada değil: onun mesajı komuta göre değişiyor
-(bkz. Permissions.check_update) ve /cancel gibi komutların bakım modunda da
-çalışması gerekiyor.
+Maintenance mode is INTENTIONALLY not handled here: its message depends on
+the command (see Permissions.check_update) and commands like /cancel still
+need to work during maintenance.
 """
 
 import logging
 
 from telegram import Update
 from telegram.ext import ApplicationHandlerStop, ContextTypes
+
+from ..i18n import t
 
 logger = logging.getLogger("downloader")
 
@@ -36,20 +38,19 @@ async def ban_gate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = user.id if user else None
     chat_id = chat.id if chat else None
 
-    # Admin hiçbir zaman kapıda durdurulmaz (kendini kilitleme riski).
+    # The admin is never stopped here (avoids locking themself out).
     if permissions.is_admin(user_id):
         return
 
     if permissions.is_user_banned(user_id):
-        reason = "Bu kullanıcı botu kullanamaz."
+        reason = t("banned_user")
     elif permissions.is_group_banned(chat_id):
-        reason = "Bot bu grupta kullanılamıyor."
+        reason = t("banned_group")
     else:
         return
 
-    # Butona basıldıysa sadece basana görünen bir uyarı ver; ölü buton
-    # bırakmak yerine ne olduğunu söylemek daha iyi. Mesajlara sessiz
-    # kalınır — banlı bir sohbete sürekli yanıt yazmak spam olur.
+    # A button press gets a private alert; messages are ignored silently —
+    # replying to every message in a banned chat would just be spam.
     query = update.callback_query
     if query is not None:
         try:

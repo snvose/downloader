@@ -1,4 +1,4 @@
-# Sırlar ve çalışma zamanı verisi — ASLA paylaşılmamalı
+# Secrets and runtime data — NEVER share these
 data/.env
 data/cookies.txt
 data/cache.json
@@ -20,16 +20,16 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# Geliştirme notları (public repoda istenmez)
+# Development notes (not meant for the public repo)
 bugs.txt
 
-# Editör / sistem
+# Editor / system
 .vscode/
 .idea/
 *.swp
 .DS_Store
 
-# Faz 2-3 çalışma zamanı verisi
+# Phase 2-3 runtime data
 data/bot.db
 data/bot.db-wal
 data/bot.db-shm
@@ -37,7 +37,7 @@ data/cookie_stats.json
 data/sources.json
 data/broadcasts.json
 
-# GÜVENLİK: token/sır içeren dosyalar
+# SECURITY: files that hold tokens/secrets
 data/env-backup.env
 data/bot-api/
 data/*.binlog

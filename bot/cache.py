@@ -1,19 +1,16 @@
 from __future__ import annotations
 
 """
-bot/cache.py — Aynı linkin tekrar indirilmesini önleyen kalıcı cache.
+Persistent cache that avoids re-downloading the same link.
 
-Akış:
-  1. file_id varsa  -> diske gitmeden direkt file_id ile ilet.
-  2. file_id yok ama dosya diskte varsa -> yeniden yükle, file_id'yi kaydet.
-  3. Ne file_id ne dosya varsa -> normal indirme sürecini başlat.
+  1. file_id known        -> forward directly, no disk access
+  2. file missing file_id -> re-upload from disk and store the new file_id
+  3. neither              -> run the normal download
 
-Veri data/cache.json içinde KALICI saklanır. Anahtar: (normalize URL + mode).
-Her kayıt birden çok dosya tutabilir (medya + kapak gibi). Her dosya için
-hem file_id hem disk yolu saklanır; biri yoksa diğerine düşülür.
+Stored in data/cache.json, keyed by (normalised URL + mode). A record may hold
+several files (media + cover); each file keeps both a file_id and a disk path.
 
-Senkron dosya I/O içerdiği için handler'lardan asyncio.to_thread() ile
-çağrılmalıdır (bkz. app.py / links.py).
+The I/O here is blocking, so handlers must call it through asyncio.to_thread.
 """
 
 import hashlib
@@ -24,15 +21,17 @@ from urllib.parse import parse_qsl, urlsplit
 from .storage import read_json, write_json_atomic
 
 
-# İçeriği TANIMLAYAN query parametreleri (cache anahtarında korunur).
-# YouTube/YT Music: v= (video), list= (playlist). Bunlar atılırsa farklı
-# videolar aynı anahtara düşer ve yanlış medya servis edilir.
+# Query parameters that identify the content and must stay in the cache key.
+# Dropping v= or list= would make different videos collide on one key.
 _SIGNIFICANT_PARAMS = {"v", "list", "index"}
+
+# Upper bound on stored records. The whole file is rewritten on every store,
+# so an unbounded cache slowly turns every download into a large disk write.
+MAX_RECORDS = 5000
 
 
 def _normalize_for_key(url: str) -> str:
-    """URL'yi içerik kimliğini koruyacak, takip parametrelerini atacak biçimde
-    normalize eder. (host + path + yalnızca anlamlı query parametreleri)"""
+    """host + path + significant query params, tracking parameters dropped."""
     try:
         parts = urlsplit((url or "").strip())
         host = (parts.netloc or "").lower()
@@ -60,9 +59,10 @@ def make_key(url: str, mode: str = "auto") -> str:
 
 
 class MediaCache:
-    def __init__(self, data_dir: Path, *, enabled: bool = True):
+    def __init__(self, data_dir: Path, *, enabled: bool = True, max_records: int = MAX_RECORDS):
         self.cache_file = data_dir / "cache.json"
         self.enabled = enabled
+        self.max_records = int(max_records)
 
     def _load(self) -> dict:
         data = read_json(self.cache_file, {})
@@ -71,18 +71,27 @@ class MediaCache:
     def _save(self, data: dict) -> None:
         write_json_atomic(self.cache_file, data)
 
+    def _trim(self, data: dict) -> dict:
+        """Keeps the newest max_records entries."""
+        if self.max_records <= 0 or len(data) <= self.max_records:
+            return data
+        ordered = sorted(
+            data.items(),
+            key=lambda item: float((item[1] or {}).get("updated_at") or 0.0),
+            reverse=True,
+        )
+        return dict(ordered[: self.max_records])
+
     def get(self, url: str, mode: str = "auto") -> dict | None:
-        """Cache kaydını döner. enabled=False ise her zaman None."""
         if not self.enabled:
             return None
         return self._load().get(make_key(url, mode))
 
     def resolve_sendable(self, url: str, mode: str = "auto") -> dict | None:
         """
-        Gönderilebilir kayıt döner:
-          {"items": [{"file_id"?: str, "path"?: str, "kind": str}], "title", "info"...}
-        En az bir öğenin file_id'si VEYA diskte mevcut dosyası olmalı; aksi halde
-        None döner ve normal indirme tetiklenir.
+        Returns a record that can actually be sent, i.e. at least one item has
+        a file_id or an existing file on disk. Otherwise None, which triggers
+        a normal download.
         """
         record = self.get(url, mode)
         if not record:
@@ -94,8 +103,12 @@ class MediaCache:
             path = item.get("path")
             if file_id:
                 usable.append(item)
-            elif path and Path(path).is_file() and Path(path).stat().st_size > 0:
-                usable.append(item)
+            else:
+                try:
+                    if path and Path(path).is_file() and Path(path).stat().st_size > 0:
+                        usable.append(item)
+                except OSError:
+                    pass
 
         if not usable:
             return None
@@ -113,16 +126,10 @@ class MediaCache:
         title: str = "",
         info: dict | None = None,
     ) -> None:
-        """
-        items: [{"file_id": str|None, "path": str|None, "kind": str}]
-        En az bir kullanılabilir öğe yoksa kayıt yapılmaz.
-        """
+        """items: [{"file_id": str|None, "path": str|None, "kind": str}]"""
         if not self.enabled:
             return
-        clean_items = [
-            it for it in items
-            if it.get("file_id") or it.get("path")
-        ]
+        clean_items = [it for it in items if it.get("file_id") or it.get("path")]
         if not clean_items:
             return
 
@@ -136,10 +143,10 @@ class MediaCache:
             "created_at": time.time(),
             "updated_at": time.time(),
         }
-        self._save(data)
+        self._save(self._trim(data))
 
     def update_file_ids(self, url: str, mode: str, items: list[dict]) -> None:
-        """Var olan kayda yeni file_id'leri işler (disk→yükle→file_id senaryosu)."""
+        """Writes fresh file_ids onto an existing record."""
         if not self.enabled:
             return
         data = self._load()
@@ -151,13 +158,12 @@ class MediaCache:
         record["items"] = [it for it in items if it.get("file_id") or it.get("path")]
         record["updated_at"] = time.time()
         data[key] = record
-        self._save(data)
+        self._save(self._trim(data))
 
     def prune_missing_files(self) -> int:
         """
-        Diskteki dosyası silinmiş VE file_id'si de olmayan öğeleri/kayıtları
-        temizler. Günlük temizlik görevinden çağrılır. Temizlenen kayıt sayısını
-        döner.
+        Drops items whose file is gone and that have no file_id either.
+        Called by the daily cleanup. Returns the number of removed records.
         """
         data = self._load()
         removed = 0
@@ -170,7 +176,7 @@ class MediaCache:
                 file_id = item.get("file_id")
                 path = item.get("path")
                 if file_id:
-                    # file_id ile gönderim hâlâ mümkün; sadece ölü disk yolunu boşalt
+                    # Still sendable by file_id; just clear the dead disk path.
                     if path and not Path(path).exists():
                         item = dict(item)
                         item["path"] = None

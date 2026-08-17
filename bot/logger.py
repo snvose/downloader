@@ -24,7 +24,7 @@ def setup_logging(config: Config) -> logging.Logger:
         console.setLevel(logging.INFO)
         root.addHandler(console)
 
-    # boyut tabanlı yerine GÜNLÜK rotasyon + retention süresi (7 gün varsayılan)
+    # Daily rotation with a retention window instead of size based rotation.
     file_exists = any(
         isinstance(handler, TimedRotatingFileHandler)
         and getattr(handler, "baseFilename", "") == str(log_file)
@@ -48,10 +48,7 @@ def setup_logging(config: Config) -> logging.Logger:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
 
-    # indirme olayları için ayrı günlük log (data/logs/downloads.log-*)
     setup_download_logger(config.log_dir, config.log_retention_days)
-
-    # admin bildiriminde son log satırlarını sunmak için ring buffer
     install_ring_buffer()
 
     return logging.getLogger("downloader")

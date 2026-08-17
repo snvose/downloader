@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 """
-bot/cookie_health.py — cookie durumu takibi ve raporlama.
+Cookie health tracking and reporting.
 
-İki iş yapar:
+1) FILE ANALYSIS — reads cookies.txt per platform: which platform has cookies,
+   how many are expired, when the nearest one expires.
 
-1) DOSYA ANALİZİ — cookies.txt'i platform bazında okur: hangi platformun
-   çerezi var, kaç tanesi süresi dolmuş, en yakın bitiş ne zaman.
-
-2) HATA TAKİBİ — indirme hataları içinde cookie kaynaklı olanları ayırır,
-   ayrı bir log dosyasına yazar (data/logs/cookie_errors.log) ve platform
-   bazında sayaç tutar (data/cookie_stats.json). Böylece admin "hangi
-   cookie'yi yenilemem gerek" sorusunu tek bakışta yanıtlar.
+2) FAILURE TRACKING — separates cookie related download failures, writes them
+   to data/logs/cookie_errors.log and counts them per platform in
+   data/cookie_stats.json, so the admin panel can answer "which cookie do I
+   need to refresh?" at a glance.
 """
 
 import logging
@@ -24,39 +22,34 @@ from .storage import read_json, write_json_atomic
 
 logger = logging.getLogger("downloader")
 
-# Cookie yenilenmesi gerektiğine işaret eden hata kalıpları.
-# yt-dlp/gallery-dl bu mesajları giriş gerektiren ya da oturumu geçersiz
-# içeriklerde döndürür.
+# Error patterns that indicate the cookies need refreshing.
 _COOKIE_ERROR_PATTERNS = [
-    # En başta: hesap kilidi cookie'yi yenilemekle DÜZELMEZ, önce hesapta
-    # doğrulamanın tamamlanması gerekir. Bu yüzden aşağıdaki genel
-    # kalıplardan önce yakalanmalı ki panel "cookie'yi yenile" demesin.
+    # First: an account lock is NOT fixed by refreshing cookies, the account
+    # owner has to complete the challenge. Matched before the generic rules so
+    # the panel does not say "refresh the cookie".
     (r"checkpoint_required|challenge_required|instagram\.com/challenge",
-     "hesap kilitli — doğrulama gerekiyor (cookie yenilemek yetmez)"),
-    (r"sign in to confirm", "giriş doğrulaması isteniyor"),
-    (r"login required", "giriş gerekiyor"),
-    (r"requested content is not available|content isn'?t available", "içerik oturumsuz görünmüyor"),
-    (r"private (video|account|profile)", "özel içerik"),
-    (r"this video is only available for registered users", "yalnızca üyelere açık"),
-    (r"http error 401", "yetkisiz (401)"),
-    (r"http error 403|403: forbidden", "erişim reddedildi (403)"),
-    (r"age.?restricted|confirm your age", "yaş kısıtlaması"),
-    # DİKKAT: burada yalnızca "cookies" aramak yanlış pozitif üretiyordu.
-    # Toplu hata mesajında deneme ETİKETLERİ de duruyor ("cookies: ERROR: ...",
-    # "cookies-loose: ..."); çıplak kalıp bu etiketi yakalayıp cookie ile hiç
-    # ilgisi olmayan her başarısızlığı "cookie hatası" diye raporluyordu.
-    # Örnek: TikTok slayt gönderisi "Unsupported URL" ile düşüyor, panel ise
-    # "TikTok cookie'sini yenile" diyordu.
+     "account locked — verification required (refreshing cookies is not enough)"),
+    (r"sign in to confirm", "sign-in confirmation requested"),
+    (r"login required", "login required"),
+    (r"requested content is not available|content isn'?t available", "content hidden without a session"),
+    (r"private (video|account|profile)", "private content"),
+    (r"this video is only available for registered users", "members only"),
+    (r"http error 401", "unauthorized (401)"),
+    (r"http error 403|403: forbidden", "access denied (403)"),
+    (r"age.?restricted|confirm your age", "age restricted"),
+    # A bare "cookies" match produced false positives: the combined error text
+    # also contains attempt LABELS ("cookies: ERROR: ...", "cookies-loose: ..."),
+    # which turned unrelated failures into "cookie errors".
     (r"--cookies|cookies? (?:are |is )?(?:no longer valid|invalid|expired|"
      r"rejected|required)|invalid cookies?|cookies? (?:have )?expired",
-     "cookie hatası"),
-    (r"unable to download webpage.*(login|auth)", "oturum sorunu"),
-    (r"rate.?limit|too many requests", "oran sınırı (oturum yenilenmeli)"),
-    (r"empty media response", "boş yanıt (oturum düşmüş olabilir)"),
-    (r"unable to extract (shared_data|sharedData|viewer)", "oturum çerezi geçersiz"),
+     "cookie error"),
+    (r"unable to download webpage.*(login|auth)", "session problem"),
+    (r"rate.?limit|too many requests", "rate limited (session should be refreshed)"),
+    (r"empty media response", "empty response (session may have expired)"),
+    (r"unable to extract (shared_data|sharedData|viewer)", "session cookie invalid"),
 ]
 
-# Hangi platform hangi cookie alan adına ihtiyaç duyar.
+# Which cookie domains each platform needs.
 PLATFORM_DOMAINS = {
     "YouTube": ["youtube.com"],
     "YouTube Music": ["youtube.com"],
@@ -69,7 +62,7 @@ PLATFORM_DOMAINS = {
     "Spotify": ["spotify.com"],
 }
 
-# Bu platformlar giriş olmadan da çalışır; cookie yoksa "eksik" denmez.
+# These platforms work without a login, so missing cookies are not an error.
 _OPTIONAL_COOKIE_PLATFORMS = {
     "YouTube", "YouTube Music", "Reddit", "Pinterest", "Spotify",
 }
@@ -77,10 +70,9 @@ _OPTIONAL_COOKIE_PLATFORMS = {
 EXPIRY_WARN_DAYS = 7
 
 
-# Hata metnindeki extractor/alan adı izlerinden gerçek platformu çıkarmak
-# için kullanılır. Bir platformun indirmesi başka bir platform üzerinden
-# yürüyebilir (Spotify -> YouTube araması gibi); bu durumda yenilenmesi
-# gereken cookie, linkin platformununki DEĞİLDİR.
+# A download can run through a different platform than the link's own
+# (Spotify resolves through a YouTube search), so the cookie to refresh is
+# whichever platform the error itself points at.
 _ERROR_PLATFORM_MARKERS = [
     (r"\[youtube(:search)?\]|youtube\.com|ytsearch", "YouTube"),
     (r"\[instagram\]|instagram\.com", "Instagram"),
@@ -93,13 +85,7 @@ _ERROR_PLATFORM_MARKERS = [
 
 
 def error_platform_hint(message: str) -> str | None:
-    """
-    Hata mesajının hangi platformun cookie'sine işaret ettiğini döndürür.
-
-    Spotify indirmeleri YouTube araması üzerinden yürüdüğü için, hata
-    "Spotify" işi altında gelse bile yenilenmesi gereken cookie YouTube'un
-    olabilir. Bu ayrım yapılmazsa admin paneli yanlış platformu işaret eder.
-    """
+    """Which platform's cookie does this error point at?"""
     if not message:
         return None
 
@@ -111,9 +97,7 @@ def error_platform_hint(message: str) -> str | None:
 
 
 def classify_cookie_error(message: str) -> str | None:
-    """
-    Hata mesajı cookie kaynaklı mı? Değilse None, ise okunur sebep döner.
-    """
+    """Returns a readable reason when the error is cookie related, else None."""
     if not message:
         return None
 
@@ -124,14 +108,14 @@ def classify_cookie_error(message: str) -> str | None:
     return None
 
 
-# ── 1. Dosya analizi ─────────────────────────────────────────────────────────
+# ── 1. File analysis ─────────────────────────────────────────────────────────
 
 def parse_cookie_file(path: Path) -> dict[str, dict[str, Any]]:
     """
-    Netscape cookies.txt'i alan adı bazında özetler.
+    Summarises a Netscape cookies.txt per domain.
 
-    Dönüş: {"tiktok.com": {"count": 22, "expired": 0, "nearest_expiry": ts,
-                           "names": [...]}}
+    Returns {"tiktok.com": {"count": 22, "expired": 0, "nearest_expiry": ts,
+                            "names": [...]}}
     """
     path = Path(path)
     result: dict[str, dict[str, Any]] = {}
@@ -187,7 +171,7 @@ def platform_cookie_status(
     failures: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Her platform için cookie durumunu üretir (admin paneli bunu gösterir).
+    Cookie status per platform for the admin panel.
 
     status: ok | expiring | expired | missing | optional_missing
     """
@@ -199,13 +183,11 @@ def platform_cookie_status(
     for platform, wanted in PLATFORM_DOMAINS.items():
         matched: dict[str, Any] | None = None
 
-        # Alt alan adları da sayılır (www.tiktok.com → tiktok.com)
+        # Subdomains count too (www.tiktok.com -> tiktok.com)
         for domain, entry in domains.items():
             if any(domain == w or domain.endswith("." + w) for w in wanted):
                 if matched is None:
-                    matched = {
-                        "count": 0, "expired": 0, "nearest_expiry": 0,
-                    }
+                    matched = {"count": 0, "expired": 0, "nearest_expiry": 0}
                 matched["count"] += entry["count"]
                 matched["expired"] += entry["expired"]
                 nearest = entry["nearest_expiry"]
@@ -253,21 +235,20 @@ def platform_cookie_status(
             "last_failure": last_time,
         })
 
-    # Sorunlular üstte: expired → missing → expiring → ok
+    # Problems first: expired -> missing -> expiring -> ok
     order = {"expired": 0, "missing": 1, "expiring": 2, "optional_missing": 3, "ok": 4}
     rows.sort(key=lambda r: (order.get(r["status"], 9), -r["failures"]))
     return rows
 
 
-# ── 2. Hata takibi ───────────────────────────────────────────────────────────
+# ── 2. Failure tracking ──────────────────────────────────────────────────────
 
 class CookieLog:
     """
-    Cookie kaynaklı indirme hatalarını ayrı bir kanala yazar ve sayar.
+    Writes cookie related failures to their own channel and counts them.
 
-    Dosyalar:
-        data/logs/cookie_errors.log — insan tarafından okunur ayrıntılı kayıt
-        data/cookie_stats.json      — admin paneli için platform sayaçları
+        data/logs/cookie_errors.log — detailed, human readable
+        data/cookie_stats.json      — per platform counters for the panel
     """
 
     def __init__(self, data_dir: Path, log_dir: Path | None = None):
@@ -291,24 +272,21 @@ class CookieLog:
         error: str = "",
         user_id: int | None = None,
     ) -> None:
-        """Cookie kaynaklı bir hatayı kaydeder."""
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         domains = ", ".join(PLATFORM_DOMAINS.get(platform, [])) or "-"
 
-        # 1) Ayrıntılı log satırı
         try:
             self.log_dir.mkdir(parents=True, exist_ok=True)
             line = (
-                f"{timestamp} | platform={platform} | gereken_cookie={domains} "
-                f"| sebep={reason} | user={user_id or '-'} | url={url[:160]} "
-                f"| hata={str(error)[:300].replace(chr(10), ' ')}\n"
+                f"{timestamp} | platform={platform} | needs_cookie={domains} "
+                f"| reason={reason} | user={user_id or '-'} | url={url[:160]} "
+                f"| error={str(error)[:300].replace(chr(10), ' ')}\n"
             )
             with self.log_file.open("a", encoding="utf-8") as fh:
                 fh.write(line)
         except OSError as exc:
-            logger.warning("Cookie log yazılamadı: %s", exc)
+            logger.warning("Could not write the cookie log: %s", exc)
 
-        # 2) Panel sayacı
         try:
             data = self._load()
             entry = data["platforms"].setdefault(platform, {"count": 0})
@@ -318,7 +296,7 @@ class CookieLog:
             entry["last_url"] = url[:200]
             write_json_atomic(self.stats_file, data)
         except Exception as exc:
-            logger.warning("Cookie istatistiği yazılamadı: %s", exc)
+            logger.warning("Could not write the cookie stats: %s", exc)
 
     def failures(self) -> dict[str, Any]:
         return self._load().get("platforms", {})
@@ -339,7 +317,6 @@ class CookieLog:
         write_json_atomic(self.stats_file, data)
 
     def tail(self, lines: int = 15) -> list[str]:
-        """Son N cookie hatası (admin paneli detayı için)."""
         try:
             content = self.log_file.read_text(encoding="utf-8", errors="ignore")
         except OSError:

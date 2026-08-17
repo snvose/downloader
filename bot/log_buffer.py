@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 """
-bot/log_buffer.py — Son N log satırını bellekte tutan handler.
-
-Admin hata bildiriminde "son 20 satır log" gönderebilmek için kullanılır.
-Diske yazmaz; yalnızca bir collections.deque ring buffer tutar.
+Keeps the last N log lines in memory so the admin failure notification can
+include a tail of the log. Nothing is written to disk.
 """
 
 import logging
@@ -22,7 +20,7 @@ class RingBufferHandler(logging.Handler):
 
 
 def install_ring_buffer() -> None:
-    """Root logger'a ring buffer handler ekler (bir kez)."""
+    """Attaches the ring buffer handler to the root logger (once)."""
     root = logging.getLogger()
     if any(isinstance(h, RingBufferHandler) for h in root.handlers):
         return
