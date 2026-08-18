@@ -145,6 +145,41 @@ def is_spotify_url(url: str) -> bool:
     return "spotify" in get_host(url)
 
 
+# Platforms where a bare profile/feed URL (no post/video ID in the path) is
+# easy to send by mistake — a share button copies the profile link, not the
+# post link, more often than users notice. Matching one of these means the
+# path actually points at a single post; anything else on these platforms is
+# treated as a profile link and rejected before a download ever starts.
+_POST_PATH_PATTERNS: dict[str, re.Pattern] = {
+    "Instagram": re.compile(r"/(p|reel|reels|tv|stories)/", re.IGNORECASE),
+    "TikTok": re.compile(r"/(video|photo)/\d+", re.IGNORECASE),
+    "X/Twitter": re.compile(r"/status(es)?/\d+", re.IGNORECASE),
+    "Facebook": re.compile(
+        r"/(videos|reel|watch|posts|photo|share)/|story_fbid=|photo\.php|permalink\.php|[?&]v=\d+",
+        re.IGNORECASE,
+    ),
+    "Reddit": re.compile(r"/comments/", re.IGNORECASE),
+    "Pinterest": re.compile(r"/pin/", re.IGNORECASE),
+}
+
+# Short-link redirectors on these platforms always resolve to a single post,
+# never a profile page, so they're exempt from the path check above.
+_ALWAYS_POST_HOSTS = {"vm.tiktok.com", "vt.tiktok.com", "fb.watch", "pin.it", "redd.it"}
+
+
+def is_profile_url(url: str) -> bool:
+    """True if url looks like a whole profile/feed page rather than a single post."""
+    pattern = _POST_PATH_PATTERNS.get(platform_name(url))
+    if pattern is None:
+        return False
+    if get_host(url) in _ALWAYS_POST_HOSTS:
+        return False
+    parsed = urlparse(url)
+    if pattern.search(parsed.path or "") or pattern.search(parsed.query or ""):
+        return False
+    return True
+
+
 def is_facebook_url(url: str) -> bool:
     host = get_host(url)
     return "facebook" in host or host in {"fb.watch", "fb.com", "www.fb.com"}

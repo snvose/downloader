@@ -506,6 +506,15 @@ _STRINGS: dict[str, dict[str, str]] = {
         "ar": "قام إنستغرام بقفل حساب البوت مؤقتًا. يتطلب هذا المحتوى تسجيل الدخول، "
               "لذا لا يمكن تنزيله الآن. حاول مرة أخرى لاحقًا.",
     },
+    "profile_link_unsupported": {
+        "tr": "Bu bir profil bağlantısı, tekil bir gönderi değil. Lütfen indirmek istediğin gönderinin/videonun kendi bağlantısını gönder.",
+        "en": "This is a profile link, not a single post. Please send the link to the specific post/video you want to download.",
+        "ru": "Это ссылка на профиль, а не на отдельный пост. Отправьте ссылку на конкретный пост/видео.",
+        "de": "Das ist ein Profil-Link, kein einzelner Beitrag. Bitte sende den Link zum gewünschten Beitrag/Video.",
+        "es": "Este es un enlace de perfil, no de una publicación. Envía el enlace a la publicación/video que quieres descargar.",
+        "fr": "Ceci est un lien de profil, pas d'une publication. Envoyez le lien de la publication/vidéo à télécharger.",
+        "ar": "هذا رابط ملف شخصي وليس منشورًا واحدًا. أرسل رابط المنشور/الفيديو الذي تريد تنزيله.",
+    },
     "err_unsupported": {
         "tr": "Bu bağlantı desteklenmiyor.", "en": "This link is not supported.",
         "ru": "Эта ссылка не поддерживается.", "de": "Dieser Link wird nicht unterstützt.",

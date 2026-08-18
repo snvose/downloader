@@ -26,6 +26,7 @@ from bot.pending import clear_user_pending
 from bot.ui import analyzing_text, unsupported_spotify_text
 from bot.utils import (
     extract_first_url,
+    is_profile_url,
     is_spotify_url,
     is_supported_url,
     normalize_url,
@@ -663,6 +664,20 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     raw = message.text or message.caption or ""
     url = normalize_url(extract_first_url(raw) or "")
     if not url or not is_supported_url(url):
+        return
+
+    # ── Profile/feed link, not a single post: reject before doing any work ──
+    # A share button on these platforms often copies the profile URL instead
+    # of the post URL; downloading it would mean yt-dlp/gallery-dl silently
+    # walking the whole feed instead of a single item.
+    if is_profile_url(url):
+        if chat.type == "private":
+            await safe_reply(
+                message,
+                t("profile_link_unsupported"),
+                parse_mode="HTML",
+                reply_to_message_id=message.message_id,
+            )
         return
 
     # ── User/chat record (broadcast list + stats) ──────────────────────────
