@@ -43,3 +43,7 @@ data/bot-api/
 data/*.binlog
 log.txt
 bugs.txt
+
+# Local docs and packaging helpers
+docs/
+scripts/

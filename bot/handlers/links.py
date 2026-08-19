@@ -26,6 +26,7 @@ from bot.pending import clear_user_pending
 from bot.ui import analyzing_text, unsupported_spotify_text
 from bot.utils import (
     extract_first_url,
+    instagram_story_kind,
     is_profile_url,
     is_spotify_url,
     is_supported_url,
@@ -94,6 +95,9 @@ def _sync_extract_info(url: str, cookies_file: Path | None = None) -> dict:
     """
     plat = platform_name(url)
     noplaylist = plat not in {"Instagram", "TikTok", "Reddit", "Pinterest"}
+    # A link to one story is a link to one story, not to the user's whole tray.
+    if instagram_story_kind(url) == "single":
+        noplaylist = True
 
     base_opts: dict = {
         "quiet": True,
@@ -661,7 +665,9 @@ async def link_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # A share button on these platforms often copies the profile URL instead
     # of the post URL; downloading it would mean yt-dlp/gallery-dl silently
     # walking the whole feed instead of a single item.
-    if is_profile_url(url):
+    # /stories/<user> without a story ID is the same case: it means "the whole
+    # tray", not a single story.
+    if is_profile_url(url) or instagram_story_kind(url) == "tray":
         if chat.type == "private":
             await safe_reply(
                 message,

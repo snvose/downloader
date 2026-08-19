@@ -19,7 +19,7 @@ LICENSE — AGPL-3.0:
     not create a derivative work, so this bot's own license is not bound by
     AGPL. HOWEVER, if you host a cobalt instance yourself and offer it as a
     service to users, AGPL-3.0 §13 requires you to make cobalt's source code
-    (including your changes) available to those users. Details: docs/COBALT.md
+    (including your changes) available to those users.
 """
 
 import re

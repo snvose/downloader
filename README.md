@@ -73,6 +73,5 @@ from the admin panel.
 ## 📄 License
 
 AGPL-3.0 — see [`LICENSE`](LICENSE). Deploying a modified version as a public
-service requires sharing your source under §13; see
-[`docs/COBALT.md`](docs/COBALT.md) for the note on the optional cobalt
-integration.
+service requires sharing your source under §13. The same applies to a cobalt
+instance you host yourself for the optional cobalt integration.

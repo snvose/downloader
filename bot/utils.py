@@ -180,6 +180,29 @@ def is_profile_url(url: str) -> bool:
     return True
 
 
+# Instagram story URLs come in three shapes and yt-dlp treats them very
+# differently:
+#   /stories/<user>/<id>  a single story  — but yt-dlp still pulls the user's
+#                         ENTIRE story tray unless noplaylist is on
+#   /stories/<user>       the whole tray, no single item was asked for
+#   /stories/highlights/<id>  a highlight album, meant to come down in full
+_IG_STORY_RE = re.compile(
+    r"^/stories/(?P<user>[^/?#]+)(?:/(?P<sid>\d+))?/?$", re.IGNORECASE
+)
+
+
+def instagram_story_kind(url: str) -> str | None:
+    """"single", "tray" or "highlight" for Instagram story links; None otherwise."""
+    if platform_name(url) != "Instagram":
+        return None
+    match = _IG_STORY_RE.match(urlparse(url).path or "")
+    if not match:
+        return None
+    if match.group("user").lower() == "highlights":
+        return "highlight" if match.group("sid") else "tray"
+    return "single" if match.group("sid") else "tray"
+
+
 def is_facebook_url(url: str) -> bool:
     host = get_host(url)
     return "facebook" in host or host in {"fb.watch", "fb.com", "www.fb.com"}

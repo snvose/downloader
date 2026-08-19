@@ -20,7 +20,7 @@ import yt_dlp
 from bot.downloader.metadata import apply_audio_metadata
 from bot.live_guard import info_is_live, probe_is_live
 from bot.queue_events import cookie_event, log_event, progress_event
-from bot.utils import platform_name
+from bot.utils import instagram_story_kind, platform_name
 
 
 class LiveStreamError(RuntimeError):
@@ -375,6 +375,12 @@ def _compact_info(info: dict, url: str) -> dict[str, Any]:
 
 def _is_social_url(url: str) -> bool:
     return platform_name(url) in SOCIAL_PLATFORMS
+
+
+def _is_single_story(url: str) -> bool:
+    """A link to one Instagram story. Without noplaylist yt-dlp would fetch the
+    poster's entire story tray for it."""
+    return instagram_story_kind(url) == "single"
 
 
 def _is_spotify_url(url: str) -> bool:
@@ -1219,7 +1225,7 @@ def _build_opts(
     opts: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
-        "noplaylist": False if _is_social_url(url) else True,
+        "noplaylist": _is_single_story(url) or not _is_social_url(url),
         "outtmpl": str(download_dir / "%(title).180B [%(id)s].%(ext)s"),
         "restrictfilenames": False,
         "windowsfilenames": False,
