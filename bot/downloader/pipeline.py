@@ -27,7 +27,6 @@ from .ytdlp import (
     _clear_partial_files as _clear_partial,
     _download_with_gallery_dl,
     _is_spotify_url,
-    collect_files,
     download_with_ytdlp,
     short_error,
 )

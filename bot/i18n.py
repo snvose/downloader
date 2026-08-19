@@ -117,7 +117,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "es": "Plataformas compatibles", "fr": "Plateformes prises en charge",
         "ar": "المنصات المدعومة",
     },
-    "help_duyurular": {
+    "help_broadcasts": {
         "tr": "bot duyurularını açar / kapatır.",
         "en": "turn bot announcements on / off.",
         "ru": "включить / выключить объявления бота.",

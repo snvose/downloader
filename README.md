@@ -39,7 +39,7 @@ audio, your choice. No accounts, no ads, no watermarks.
 Requires Python 3.10+, `ffmpeg`, and `git` — the installer handles the rest.
 
 ```bash
-git clone <repo-url> downloader
+git clone https://github.com/snvose/downloader.git
 cd downloader
 bash install.sh
 ```
@@ -76,4 +76,3 @@ AGPL-3.0 — see [`LICENSE`](LICENSE). Deploying a modified version as a public
 service requires sharing your source under §13; see
 [`docs/COBALT.md`](docs/COBALT.md) for the note on the optional cobalt
 integration.
-</content>

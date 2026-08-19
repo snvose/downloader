@@ -466,12 +466,10 @@ async def _run_playlist_download(
     if not pjob:
         return
 
-    config  = bot_data["config"]
     manager = bot_data["process_manager"]
     mode_dl = "video_best" if pjob.get("type") == "video" else "audio_best"
     total   = len(indices)
     failed: list[str] = []
-    loop = asyncio.get_running_loop()
 
     # The playlist download is not registered per-item with process_manager
     # (the playlist manages its own ordering); the "downloading" flag on
@@ -502,13 +500,6 @@ async def _run_playlist_download(
             )
         except Exception:
             pass
-
-        try:
-            einfo = await loop.run_in_executor(
-                None, _sync_extract_info, eurl, config.cookies_file
-            )
-        except Exception:
-            einfo = {"platform": pjob["platform"], "title": etitle, "webpage_url": eurl, "description": ""}
 
         try:
             job = manager.start_download(

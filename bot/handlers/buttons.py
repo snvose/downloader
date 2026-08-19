@@ -44,7 +44,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     config = context.application.bot_data["config"]
     permissions = context.application.bot_data["permissions"]
-    manager = context.application.bot_data["process_manager"]
 
     is_owner = permissions.is_admin(user_id)
 

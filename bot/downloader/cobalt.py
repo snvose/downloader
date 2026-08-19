@@ -22,13 +22,9 @@ LICENSE — AGPL-3.0:
     (including your changes) available to those users. Details: docs/COBALT.md
 """
 
-import json
-import os
 import re
-import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import requests
 

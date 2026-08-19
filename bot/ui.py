@@ -111,7 +111,7 @@ def help_text() -> str:
         f"<b>{t('help_commands')}</b>\n"
         f"<code>/audio</code> — {t('help_ses')}\n"
         f"<code>/cancel</code> — {t('help_cancel')}\n"
-        f"<code>/broadcasts</code> — {t('help_duyurular')}"
+        f"<code>/broadcasts</code> — {t('help_broadcasts')}"
     )
 
 
