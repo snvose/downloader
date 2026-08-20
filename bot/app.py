@@ -47,7 +47,7 @@ from .safe_message import is_entity_error, strip_custom_emoji
 from .sender import FloodLimitError, cleanup_old_posts, send_downloaded_files
 from .storage import increment_stat, init_runtime_files
 from .ui import cancelled_text, configure_branding, progress_text, uploading_text
-from .utils import platform_name, safe_public_error
+from .utils import is_no_media_error, platform_name, safe_public_error
 from .cache import MediaCache
 from .chats import ChatRegistry
 from .analytics import ActivityBuffer, activity_flusher
@@ -425,25 +425,36 @@ async def queue_consumer(app: Application) -> None:
                         safe_public_error(public_message),
                     )
 
-                # All errors are logged with a full traceback.
-                logger.error("JOB %s ERROR\n%s", job_id, event.get("error"))
-                await asyncio.to_thread(
-                    log_download_error,
-                    url=job.source_url,
-                    platform=platform_name(job.source_url),
-                    traceback_text=str(event.get("error") or ""),
-                )
+                # A post with nothing to download is a normal outcome, not a
+                # malfunction: the user is told, but it is not worth a
+                # traceback in the log or an alert to the admin.
+                no_media = is_no_media_error(public_message)
+
+                if no_media:
+                    logger.info("JOB %s: no media in post | url=%s", job_id, job.source_url)
+                else:
+                    # All errors are logged with a full traceback.
+                    logger.error("JOB %s ERROR\n%s", job_id, event.get("error"))
+
+                if not no_media:
+                    await asyncio.to_thread(
+                        log_download_error,
+                        url=job.source_url,
+                        platform=platform_name(job.source_url),
+                        traceback_text=str(event.get("error") or ""),
+                    )
                 await asyncio.to_thread(
                     log_download,
                     user_id=job.user_id, username=job.username,
                     chat_id=job.chat_id, chat_title=job.chat_title,
                     chat_type=job.chat_type,
                     platform=platform_name(job.source_url),
-                    url=job.source_url, result="error",
+                    url=job.source_url,
+                    result="no_media" if no_media else "error",
                     duration=time.time() - job.started_at,
                 )
 
-                if config:
+                if config and not no_media:
                     increment_stat(config.data_dir, "failed_downloads")
                     await notify_admin_failure(
                         app.bot, config.admin_id,

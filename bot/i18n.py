@@ -521,6 +521,15 @@ _STRINGS: dict[str, dict[str, str]] = {
         "es": "Este enlace no es compatible.", "fr": "Ce lien n'est pas pris en charge.",
         "ar": "هذا الرابط غير مدعوم.",
     },
+    "err_no_media": {
+        "tr": "Bu gönderide indirilecek bir medya yok — sadece metin.",
+        "en": "There's no media in this post — it's text only.",
+        "ru": "В этой публикации нет медиа — только текст.",
+        "de": "Dieser Beitrag enthält keine Medien — nur Text.",
+        "es": "Esta publicación no tiene medios — solo texto.",
+        "fr": "Ce post ne contient aucun média — uniquement du texte.",
+        "ar": "لا توجد وسائط في هذا المنشور — نص فقط.",
+    },
     "err_generic": {
         "tr": "Bu bağlantı indirilemedi. Link silinmiş, gizli veya erişim kısıtlı olabilir.",
         "en": "This link couldn't be downloaded. It may be deleted, private or restricted.",

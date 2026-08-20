@@ -230,6 +230,24 @@ def file_kind(path: str | Path) -> str:
     return "document"
 
 
+def is_no_media_error(raw: str) -> bool:
+    """True when every source agreed the post simply has no media in it.
+
+    yt-dlp reporting "no video" only means it found nothing *it* handles — a
+    photo post looks the same — so this also requires the gallery-dl fallback
+    to have come back empty. Text-only posts land here; it is not a failure to
+    alert the admin about.
+    """
+    lowered = str(raw or "").lower()
+    no_video = (
+        "no video could be found" in lowered
+        or "there is no video in this post" in lowered
+        or "no video formats found" in lowered
+    )
+    no_images = "downloaded no files" in lowered or "no results" in lowered
+    return no_video and no_images
+
+
 def safe_public_error(raw: str) -> str:
     """Maps a technical error message to a short, translated user message."""
     from .i18n import t  # late import: avoids a circular dependency
@@ -247,6 +265,13 @@ def safe_public_error(raw: str) -> str:
         return t("err_ig_checkpoint")
     if "tiktok" in lowered and ("403" in lowered or "forbidden" in lowered):
         return t("err_tiktok_403")
+    # A text-only post: checked before the access rules, which would otherwise
+    # blame a fallback's login error for a post that has nothing to download.
+    if is_no_media_error(lowered):
+        return t("err_no_media")
+    # X wording for a protected account; it says neither "private" nor "login".
+    if "not authorized to view" in lowered or "protected tweet" in lowered:
+        return t("err_private")
     if "only available for registered users" in lowered:
         return t("err_login")
     if "private" in lowered or "login" in lowered or "sign in" in lowered:
