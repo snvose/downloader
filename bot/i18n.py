@@ -521,6 +521,15 @@ _STRINGS: dict[str, dict[str, str]] = {
         "es": "Este enlace no es compatible.", "fr": "Ce lien n'est pas pris en charge.",
         "ar": "هذا الرابط غير مدعوم.",
     },
+    "err_restricted": {
+        "tr": "Bu gönderi yalnızca belirli kişilere açık (yaş / kitle sınırı). Bot erişemiyor.",
+        "en": "This post is limited to certain viewers (age or audience restriction).",
+        "ru": "Эта публикация доступна только определённым зрителям (возрастное ограничение).",
+        "de": "Dieser Beitrag ist nur für bestimmte Zuschauer sichtbar (Alters-/Zielgruppenlimit).",
+        "es": "Esta publicación está limitada a ciertos espectadores (restricción de edad o audiencia).",
+        "fr": "Ce post est réservé à certains spectateurs (restriction d'âge ou d'audience).",
+        "ar": "هذا المنشور مقصور على جمهور معيّن (قيد عمري أو جمهور محدد).",
+    },
     "err_no_media": {
         "tr": "Bu gönderide indirilecek bir medya yok — sadece metin.",
         "en": "There's no media in this post — it's text only.",

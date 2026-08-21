@@ -31,6 +31,8 @@ _COOKIE_ERROR_PATTERNS = [
      "account locked — verification required (refreshing cookies is not enough)"),
     (r"sign in to confirm", "sign-in confirmation requested"),
     (r"login required", "login required"),
+    (r"available to everyone|certain audiences",
+     "content restricted to certain viewers — a logged-in session is needed"),
     (r"requested content is not available|content isn'?t available", "content hidden without a session"),
     (r"private (video|account|profile)", "private content"),
     (r"this video is only available for registered users", "members only"),
@@ -60,6 +62,22 @@ PLATFORM_DOMAINS = {
     "Reddit": ["reddit.com"],
     "Pinterest": ["pinterest.com"],
     "Spotify": ["spotify.com"],
+}
+
+# The cookie that actually carries the login. A file can be full of fresh
+# cookies for a domain and still be anonymous without one of these — the case
+# that made "everything is ok" show in the panel while every age-gated
+# Instagram post failed.
+PLATFORM_LOGIN_COOKIES = {
+    "Instagram": ["sessionid"],
+    "TikTok": ["sessionid", "sessionid_ss"],
+    "Facebook": ["xs"],
+    "X/Twitter": ["auth_token"],
+    "Reddit": ["reddit_session"],
+    "Pinterest": ["_auth"],
+    "Spotify": ["sp_dc"],
+    "YouTube": ["SID", "__Secure-3PSID", "__Secure-1PSID"],
+    "YouTube Music": ["SID", "__Secure-3PSID", "__Secure-1PSID"],
 }
 
 # These platforms work without a login, so missing cookies are not an error.
@@ -182,12 +200,14 @@ def platform_cookie_status(
 
     for platform, wanted in PLATFORM_DOMAINS.items():
         matched: dict[str, Any] | None = None
+        names: list[str] = []
 
         # Subdomains count too (www.tiktok.com -> tiktok.com)
         for domain, entry in domains.items():
             if any(domain == w or domain.endswith("." + w) for w in wanted):
                 if matched is None:
                     matched = {"count": 0, "expired": 0, "nearest_expiry": 0}
+                names.extend(entry["names"])
                 matched["count"] += entry["count"]
                 matched["expired"] += entry["expired"]
                 nearest = entry["nearest_expiry"]
@@ -208,6 +228,7 @@ def platform_cookie_status(
             rows.append({
                 "platform": platform, "status": status, "count": 0,
                 "expired": 0, "nearest_expiry": 0, "days_left": None,
+                "logged_in": False,
                 "failures": fail_count, "last_reason": last_reason,
                 "last_failure": last_time,
             })
@@ -216,8 +237,14 @@ def platform_cookie_status(
         nearest = matched["nearest_expiry"]
         days_left = int((nearest - now) / 86400) if nearest else None
 
+        login_cookies = PLATFORM_LOGIN_COOKIES.get(platform, [])
+        logged_in = not login_cookies or any(name in names for name in login_cookies)
+
         if matched["expired"] and matched["expired"] >= matched["count"]:
             status = "expired"
+        elif not logged_in and platform not in _OPTIONAL_COOKIE_PLATFORMS:
+            # Cookies are there and unexpired, but none of them is the session.
+            status = "logged_out"
         elif days_left is not None and days_left <= EXPIRY_WARN_DAYS:
             status = "expiring"
         else:
@@ -230,13 +257,17 @@ def platform_cookie_status(
             "expired": matched["expired"],
             "nearest_expiry": nearest,
             "days_left": days_left,
+            "logged_in": logged_in,
             "failures": fail_count,
             "last_reason": last_reason,
             "last_failure": last_time,
         })
 
-    # Problems first: expired -> missing -> expiring -> ok
-    order = {"expired": 0, "missing": 1, "expiring": 2, "optional_missing": 3, "ok": 4}
+    # Problems first: expired -> logged out -> missing -> expiring -> ok
+    order = {
+        "expired": 0, "logged_out": 1, "missing": 2,
+        "expiring": 3, "optional_missing": 4, "ok": 5,
+    }
     rows.sort(key=lambda r: (order.get(r["status"], 9), -r["failures"]))
     return rows
 

@@ -265,6 +265,10 @@ def safe_public_error(raw: str) -> str:
         return t("err_ig_checkpoint")
     if "tiktok" in lowered and ("403" in lowered or "forbidden" in lowered):
         return t("err_tiktok_403")
+    # Restricted audience: checked before the access rules, which would call
+    # it "private" — the post is public, the viewer just isn't eligible.
+    if "available to everyone" in lowered or "certain audiences" in lowered:
+        return t("err_restricted")
     # A text-only post: checked before the access rules, which would otherwise
     # blame a fallback's login error for a post that has nothing to download.
     if is_no_media_error(lowered):

@@ -126,6 +126,10 @@ def _download_with_gallery_dl(
 
     cmd = _gallery_command()
     cmd += ["-d", str(download_dir)]
+    # Left at its defaults gallery-dl answers a 429 by sleeping a minute and
+    # retrying four times, so a rate-limited fallback held the job — and its
+    # download slot — for over four minutes before failing anyway.
+    cmd += ["--retries", "2", "--sleep-429", "5"]
 
     if cookies_file and cookies_file.exists():
         cmd += ["--cookies", str(cookies_file)]
@@ -137,7 +141,7 @@ def _download_with_gallery_dl(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        timeout=300,
+        timeout=120,
     )
 
     stdout = (proc.stdout or "").strip()
@@ -397,6 +401,18 @@ _IG_SESSION_CACHE: tuple[float, str] = (0.0, "")
 _IG_SESSION_TTL = 15 * 60
 # The panel notification for a lock is rate-limited to this interval.
 _IG_CHECKPOINT_REPORTED = 0.0
+
+# Last time the panel was told about a logged-out session (rate-limits the
+# report the same way the checkpoint one is limited).
+_IG_LOGGED_OUT_REPORTED = 0.0
+
+IG_LOGGED_OUT_MESSAGE = (
+    "The Instagram cookie has no valid session (the sessionid cookie is "
+    "missing or expired), so every request goes out logged out. Public reels "
+    "still download, but age-gated or restricted-audience posts and stories "
+    "do not, and Instagram rate-limits anonymous traffic hard. Re-export "
+    "cookies.txt from a browser that is logged in to Instagram."
+)
 
 IG_CHECKPOINT_MESSAGE = (
     "The Instagram account is locked (checkpoint_required) — the cookie's "
@@ -1094,6 +1110,21 @@ def _is_photo_only_error(error: Exception) -> bool:
     )
 
 
+def _is_audience_gated_error(error: Exception) -> bool:
+    """Instagram's wording for content limited to certain viewers.
+
+    It is a gate on the *account* asking, not on the request: another cookie
+    profile or a looser format selector returns the exact same answer, so the
+    remaining attempts are pure rate-limit fuel.
+    """
+    msg = str(error).lower()
+    return (
+        "isn't available to everyone" in msg
+        or "isn t available to everyone" in msg
+        or "can't be seen by certain audiences" in msg
+    )
+
+
 def _should_retry_without_cookies(error: Exception) -> bool:
     msg = str(error).lower()
     markers = [
@@ -1587,6 +1618,27 @@ def download_with_ytdlp(
             if filtered:
                 attempts = filtered
 
+        elif ig_state == "logged_out":
+            # No session at all: a "cookies" attempt sends the same anonymous
+            # request as the cookieless one, so running both only doubles the
+            # requests Instagram counts against the rate limit.
+            global _IG_LOGGED_OUT_REPORTED
+            queue.put(log_event(job_id, "warning", IG_LOGGED_OUT_MESSAGE))
+
+            if time.time() - _IG_LOGGED_OUT_REPORTED > _IG_SESSION_TTL:
+                _IG_LOGGED_OUT_REPORTED = time.time()
+                queue.put(cookie_event(
+                    job_id=job_id,
+                    platform="Instagram",
+                    reason="no session — the sessionid cookie is missing or expired",
+                    url=url,
+                    error=IG_LOGGED_OUT_MESSAGE,
+                ))
+
+            filtered = [item for item in attempts if not item[1]]
+            if filtered:
+                attempts = filtered
+
     for label, use_cookies, format_profile in attempts:
         try:
             queue.put(log_event(job_id, "info", f"yt-dlp attempt: {label}"))
@@ -1618,6 +1670,14 @@ def download_with_ytdlp(
             # pointless attempts against Instagram photo posts, poking it
             # every time. Go straight to gallery-dl, the only source that
             # can fetch images.
+            if _is_audience_gated_error(exc):
+                queue.put(log_event(
+                    job_id, "info",
+                    "Instagram limits this post to certain viewers — "
+                    "further attempts would return the same answer.",
+                ))
+                break
+
             if _is_photo_only_error(exc):
                 queue.put(log_event(
                     job_id, "info",
