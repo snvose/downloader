@@ -18,9 +18,12 @@ Bulk announcement delivery.
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+from .emoji_manager import strip_premium_emoji
 
 logger = logging.getLogger("downloader")
 
@@ -42,9 +45,67 @@ _PERMANENT_MARKERS = (
 )
 
 
+# Telegram's wording when it will not render the message's custom emoji.
+_EMOJI_MARKERS = (
+    "custom_emoji",
+    "can't parse entities",
+    "entity_bounds_invalid",
+    "entities_too_long",
+)
+
+
 def _is_permanent_failure(error: Exception) -> bool:
     message = str(error).lower()
     return any(marker in message for marker in _PERMANENT_MARKERS)
+
+
+def _is_emoji_failure(error: Exception) -> bool:
+    """Was the message itself rejected over its premium emoji?
+
+    This fails identically for every target, so without noticing it a single
+    unusable emoji id turned a broadcast into thousands of failed sends.
+    """
+    message = str(error).lower()
+    return any(marker in message for marker in _EMOJI_MARKERS)
+
+
+# The tags Telegram accepts in HTML parse mode.
+_ALLOWED_TAGS = {
+    "b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
+    "span", "tg-spoiler", "tg-emoji", "a", "code", "pre", "blockquote",
+}
+
+_TAG_RE = re.compile(r"<\s*(/?)\s*([a-z0-9-]+)[^>]*?(/?)\s*>", re.IGNORECASE)
+
+
+def validate_html(text: str) -> str | None:
+    """Returns a human-readable problem with the draft's HTML, or None.
+
+    Telegram rejects the whole message over one stray tag, and the rejection
+    arrives per recipient — much better to catch it while it is still a draft.
+    """
+    stack: list[str] = []
+
+    for match in _TAG_RE.finditer(text or ""):
+        closing, tag, self_closing = match.group(1), match.group(2).lower(), match.group(3)
+
+        if tag not in _ALLOWED_TAGS:
+            return f"&lt;{tag}&gt; is not a tag Telegram supports"
+        if self_closing:
+            continue
+
+        if closing:
+            if not stack:
+                return f"&lt;/{tag}&gt; closes a tag that was never opened"
+            if stack[-1] != tag:
+                return f"&lt;{stack[-1]}&gt; is closed by &lt;/{tag}&gt;"
+            stack.pop()
+        else:
+            stack.append(tag)
+
+    if stack:
+        return f"&lt;{stack[-1]}&gt; is never closed"
+    return None
 
 
 @dataclass
@@ -63,6 +124,7 @@ class BroadcastJob:
     blocked: int = 0                  # permanently unreachable, marked in the db
     cancelled: bool = False
     running: bool = False
+    degraded: bool = False            # premium emoji were dropped mid-flight
 
     errors: list[str] = field(default_factory=list)
 
@@ -117,6 +179,12 @@ class BroadcastJob:
             rate = self.sent * 100 / self.total
             lines.append(f"📈 Success rate: <b>{rate:.0f}%</b>")
 
+        if self.degraded:
+            lines.append(
+                "\n<i>⚠️ Telegram rejected the premium emoji, so they were "
+                "sent as plain emoji.</i>"
+            )
+
         if self.blocked:
             lines.append(
                 f"\n<i>{self.blocked} records were marked and will be skipped "
@@ -154,6 +222,16 @@ async def run_broadcast(
             disable_web_page_preview=True,
         )
 
+    def _degrade() -> bool:
+        """Drops the premium emoji so the rest of the run can go out."""
+        plain = strip_premium_emoji(job.text)
+        if plain == job.text:
+            return False
+        job.text = plain
+        job.degraded = True
+        logger.warning("Broadcast degraded: premium emoji removed after a rejection")
+        return True
+
     for index, chat_id in enumerate(job.targets, start=1):
         if job.cancelled:
             break
@@ -174,6 +252,17 @@ async def run_broadcast(
                     exc = None
                 except Exception as retry_exc:
                     exc = retry_exc
+
+            # A rejected emoji is a fault in the message, not in the target:
+            # strip it once and give this same chat another chance.
+            if exc is not None and _is_emoji_failure(exc) and not job.degraded:
+                if _degrade():
+                    try:
+                        await _send(chat_id)
+                        job.sent += 1
+                        exc = None
+                    except Exception as retry_exc:
+                        exc = retry_exc
 
             if exc is not None:
                 if _is_permanent_failure(exc):

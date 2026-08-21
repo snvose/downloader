@@ -13,10 +13,11 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationHandlerStop, ContextTypes
 
 from bot import analytics
-from bot.broadcast import BroadcastJob, run_broadcast
+from bot.broadcast import BroadcastJob, run_broadcast, validate_html
 from bot.i18n import LANGUAGES, set_language
 from bot.live_guard import format_duration
 from bot.cookie_health import platform_cookie_status
+from bot.emoji_manager import broadcast_slots, em, render_slots
 from bot.pending import clear_all_pending
 from bot.safe_message import safe_reply
 from bot.state import MODE_MAINTENANCE, MODE_NORMAL, MODE_SAFE
@@ -387,6 +388,7 @@ def _cookie_log_keyboard() -> InlineKeyboardMarkup:
 _COOKIE_STATUS_ICON = {
     "expired": "🔴",
     "missing": "🔴",
+    "logged_out": "🟠",
     "expiring": "🟠",
     "optional_missing": "⚪️",
     "ok": "🟢",
@@ -395,6 +397,7 @@ _COOKIE_STATUS_ICON = {
 _COOKIE_STATUS_LABEL = {
     "expired": "EXPIRED",
     "missing": "MISSING",
+    "logged_out": "NOT LOGGED IN",
     "expiring": "expiring soon",
     "optional_missing": "none (not required)",
     "ok": "valid",
@@ -429,7 +432,10 @@ def _cookie_text(context: ContextTypes.DEFAULT_TYPE) -> str:
         lines.append(f"📄 <code>{cf.name}</code> · {human_bytes(size)} · {total} cookies")
         lines.append("")
 
-    problems = [r for r in rows if r["status"] in {"expired", "missing", "expiring"}]
+    problems = [
+        r for r in rows
+        if r["status"] in {"expired", "missing", "logged_out", "expiring"}
+    ]
 
     for row in rows:
         icon = _COOKIE_STATUS_ICON.get(row["status"], "⚪️")
@@ -448,6 +454,12 @@ def _cookie_text(context: ContextTypes.DEFAULT_TYPE) -> str:
             if row["expired"]:
                 detail += f" · {row['expired']} already expired"
             parts.append(f"   <i>{detail}</i>")
+
+        if row["status"] == "logged_out":
+            parts.append(
+                "   <i>cookies present but no session cookie — "
+                "re-export from a logged-in browser</i>"
+            )
 
         if row["failures"]:
             reason = _esc(row["last_reason"])[:60]
@@ -617,6 +629,20 @@ def _bc_state(context: ContextTypes.DEFAULT_TYPE) -> dict:
     return context.application.bot_data.setdefault("broadcast_compose", {})
 
 
+def _bc_palette_text() -> str:
+    """The :slot: shortcuts an announcement can use, with a live preview."""
+    lines = [
+        "🎨 <b>Emoji shortcuts</b>",
+        "<i>Type these in the text and they become the emoji you bound in "
+        "the emoji panel:</i>",
+    ]
+    lines += [
+        f"{em(key)} <code>:{key}:</code>"
+        for _, key, _, _ in broadcast_slots()
+    ]
+    return "\n".join(lines)
+
+
 def _broadcast_text(context: ContextTypes.DEFAULT_TYPE) -> str:
     db = context.application.bot_data.get("db")
     draft = _bc_state(context)
@@ -642,18 +668,34 @@ def _broadcast_text(context: ContextTypes.DEFAULT_TYPE) -> str:
 
     message = draft.get("text")
     if message:
-        preview = _esc(message)
+        # Shown the way recipients will see it, not as escaped source: the
+        # point of a preview is catching a broken tag before 5000 people do.
+        preview, used = render_slots(message)
+        problem = validate_html(preview)
         if len(preview) > 600:
             preview = preview[:600] + "…"
         lines.append("<b>📝 Message preview</b>")
+        if problem:
+            # Rendering broken HTML here would take the panel down with it.
+            lines.append(f"<blockquote>{_esc(preview)}</blockquote>")
+            lines.append(f"⚠️ <b>Telegram would reject this:</b> {problem}")
+            lines.append("<i>Fix the text and send it again.</i>")
+            return "\n".join(lines)
         lines.append(f"<blockquote>{preview}</blockquote>")
+        if used:
+            lines.append(
+                "<i>Emoji slots used: "
+                + ", ".join(f"<code>:{key}:</code>" for key in used)
+                + "</i>"
+            )
         lines.append("")
         lines.append("Ready to send. ⬇️")
     else:
         lines.append(
             "✍️ <b>No message yet.</b>\n"
             "<i>Tap the button below and send me the broadcast text. "
-            "HTML formatting (bold, italic, links) is supported.</i>"
+            "HTML formatting (bold, italic, links) and <code>:emoji_slot:</code> "
+            "shortcuts are supported.</i>"
         )
 
     return "\n".join(lines)
@@ -662,7 +704,8 @@ def _broadcast_text(context: ContextTypes.DEFAULT_TYPE) -> str:
 def _broadcast_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMarkup:
     draft = _bc_state(context)
     kind = draft.get("kind", "all")
-    has_text = bool(draft.get("text"))
+    text = draft.get("text") or ""
+    has_text = bool(text) and not validate_html(render_slots(text)[0])
 
     kind_row = [
         InlineKeyboardButton(
@@ -678,6 +721,11 @@ def _broadcast_keyboard(context: ContextTypes.DEFAULT_TYPE) -> InlineKeyboardMar
         rows.append([InlineKeyboardButton("🚀 Send", callback_data="admin|bcconfirm")])
         rows.append([
             InlineKeyboardButton("✏️ Edit message", callback_data="admin|bcwrite"),
+            InlineKeyboardButton("🗑 Clear message", callback_data="admin|bcclear"),
+        ])
+    elif text:
+        rows.append([
+            InlineKeyboardButton("✏️ Rewrite message", callback_data="admin|bcwrite"),
             InlineKeyboardButton("🗑 Clear message", callback_data="admin|bcclear"),
         ])
     else:
@@ -1093,7 +1141,14 @@ async def _start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     targets = await asyncio.to_thread(db.broadcast_targets, kind=kind)
-    job = BroadcastJob(text=text, targets=targets, kind=kind)
+    # :slot: shortcuts become emoji here, once, rather than per recipient.
+    rendered, _used = render_slots(text)
+    problem = validate_html(rendered)
+    if problem:
+        await query.answer("The message's HTML is broken — fix it first.", show_alert=True)
+        return
+
+    job = BroadcastJob(text=rendered, targets=targets, kind=kind)
     app.bot_data["broadcast_job"] = job
 
     await query.answer("Sending started.")
@@ -1508,7 +1563,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "Write the announcement now — your next message will be taken "
             "as the draft.\n\n"
             "<i>HTML is supported: &lt;b&gt;bold&lt;/b&gt;, &lt;i&gt;italic&lt;/i&gt;, "
-            "&lt;a href=\"...\"&gt;link&lt;/a&gt;</i>",
+            "&lt;a href=\"...\"&gt;link&lt;/a&gt;</i>\n\n"
+            + _bc_palette_text(),
             InlineKeyboardMarkup([[
                 InlineKeyboardButton("‹ Cancel", callback_data="admin|bccancelwrite"),
             ]]),
@@ -1543,6 +1599,15 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.answer("Nobody in this audience.", show_alert=True)
             return
 
+        final, _used = render_slots(draft["text"])
+        problem = validate_html(final)
+        if problem:
+            await query.answer("The message's HTML is broken — fix it first.", show_alert=True)
+            return
+
+        if len(final) > 500:
+            final = final[:500] + "…"
+
         await query.answer()
         await _edit(
             query,
@@ -1550,7 +1615,9 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"🎯 Audience: <b>{_BC_KIND_LABEL.get(kind, kind)}</b>\n"
             f"👥 Recipients: <b>{count}</b> chats\n"
             f"⏱ Estimated time: <b>~{max(1, count // 20)} seconds</b>\n\n"
-            "<i>You can stop it once it starts.</i>",
+            f"<blockquote>{final}</blockquote>\n"
+            "<i>This is exactly what will be delivered. "
+            "You can stop it once it starts.</i>",
             InlineKeyboardMarkup([[
                 InlineKeyboardButton("✅ Yes, send", callback_data="admin|bcsend"),
                 InlineKeyboardButton("‹ Cancel", callback_data="admin|broadcast"),

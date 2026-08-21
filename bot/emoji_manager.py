@@ -9,6 +9,7 @@ bindings live in data/emoji_slots.json.
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,15 @@ SLOT_DEFS: list[tuple[int, str, str, str]] = [
     (85, "status_cancel", "🛑", "«Cancelled» message"),
     (86, "status_error", "❌", "Error message"),
     (87, "status_done", "✅", "Success message"),
+
+    # Announcement slots are not rendered automatically anywhere; they are the
+    # palette an admin writes broadcasts with, via :name: in the draft text.
+    (90, "bc_announce", "📣", "Broadcast: :bc_announce:"),
+    (91, "bc_new", "🆕", "Broadcast: :bc_new:"),
+    (92, "bc_warning", "⚠️", "Broadcast: :bc_warning:"),
+    (93, "bc_info", "ℹ️", "Broadcast: :bc_info:"),
+    (94, "bc_done", "✅", "Broadcast: :bc_done:"),
+    (95, "bc_star", "⭐", "Broadcast: :bc_star:"),
 ]
 
 
@@ -187,6 +197,68 @@ def em(key: str, default: str | None = None) -> str:
     return fb
 
 
+# Slot names written into a broadcast draft, e.g. ":bc_new: version 2 is out".
+_SLOT_TOKEN_RE = re.compile(r":([a-z][a-z0-9_]{1,31}):")
+
+# <tg-emoji emoji-id="123">✨</tg-emoji> — matched to undo premium emoji when
+# Telegram refuses them.
+_TG_EMOJI_RE = re.compile(r'<tg-emoji emoji-id="\d+">(.*?)</tg-emoji>', re.DOTALL)
+
+
+def _inner(fb: str) -> str:
+    """What goes inside a tg-emoji tag as the non-premium stand-in.
+
+    Telegram rejects the entity unless the tag wraps a real emoji, so slots
+    whose fallback is a plain character ("‹", "𝕏") borrow a generic one.
+    """
+    return fb if fb and max(fb) > "\u2000" else "✨"
+
+
+def em_html(key: str) -> str:
+    """Like em(), but keeps the slot's own fallback inside the tag.
+
+    That makes the premium emoji degrade to the right plain emoji instead of a
+    generic sparkle when the entity has to be stripped later.
+    """
+    fb = fallback(key, "")
+    try:
+        custom_id = load_slots().get(key, {}).get("custom_id")
+        if custom_id and str(custom_id).isdigit():
+            return f'<tg-emoji emoji-id="{custom_id}">{_inner(fb)}</tg-emoji>'
+    except Exception:
+        pass
+    return fb
+
+
+def render_slots(text: str) -> tuple[str, list[str]]:
+    """Replaces :slot_name: tokens with that slot's emoji.
+
+    Returns the rendered text and the slot names that were used. Unknown
+    tokens are left alone — ":30:" in a sentence is not a slot.
+    """
+    used: list[str] = []
+
+    def replace(match: re.Match) -> str:
+        key = match.group(1)
+        if key not in KEY_TO_SLOT:
+            return match.group(0)
+        if key not in used:
+            used.append(key)
+        return em_html(key)
+
+    return _SLOT_TOKEN_RE.sub(replace, text or ""), used
+
+
+def strip_premium_emoji(text: str) -> str:
+    """Turns every premium emoji back into the plain emoji inside its tag."""
+    return _TG_EMOJI_RE.sub(lambda m: m.group(1), text or "")
+
+
+def broadcast_slots() -> list[tuple[int, str, str, str]]:
+    """The announcement palette, for the compose screen's cheat sheet."""
+    return [slot for slot in SLOT_DEFS if 90 <= slot[0] <= 99]
+
+
 def eb(key: str, text: str = "") -> str:
     # Button labels do not support parse_mode, so buttons always use the
     # fallback emoji rather than a premium entity.
@@ -236,7 +308,8 @@ SLOT_CATEGORIES: list[tuple[int, int, str]] = [
     (10, 49, "Platform icons"),
     (50, 69, "Info fields"),
     (70, 79, "Buttons"),
-    (80, 99, "Status messages"),
+    (80, 89, "Status messages"),
+    (90, 99, "Announcements"),
 ]
 
 
