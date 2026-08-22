@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from bot.cookie_health import classify_cookie_error, error_platform_hint
-from bot.live_guard import probe_is_live
+from bot.cookie_policy import CookieCooldown, needs_cookies
+from bot.live_guard import can_be_live, probe_is_live
 from bot.queue_events import cookie_event, log_event, progress_event
 from bot.utils import platform_name
 
@@ -116,8 +117,11 @@ def download_media(
     download_dir = Path(download_dir)
 
     # ── Livestream check (once, before any source) ───────────────────────────
-    if not _is_spotify_url(url):
-        is_live, _probe = probe_is_live(url, cookies_file=cookies_file)
+    # Deliberately cookieless: live status is public, and the authenticated
+    # query measured about twice as slow. Link shapes that cannot be live
+    # (a reel, a tweet, a pin) skip the request entirely — see can_be_live().
+    if not _is_spotify_url(url) and can_be_live(url):
+        is_live, _probe = probe_is_live(url)
         if is_live:
             queue.put(log_event(job_id, "warning", f"Livestream rejected: {url}"))
             raise LiveStreamError("Livestreams cannot be downloaded.")
@@ -164,6 +168,9 @@ def download_media(
                 files, title, info = _download_with_gallery_dl(
                     job_id=job_id, url=url, download_dir=download_dir,
                     cookies_file=cookies_file, queue=queue,
+                    use_cookies=needs_cookies(url) or not CookieCooldown(
+                        download_dir.parent.parent
+                    ).active(platform),
                 )
 
             else:

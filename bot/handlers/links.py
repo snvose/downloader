@@ -21,6 +21,7 @@ from telegram.ext import ContextTypes
 from bot.safe_message import safe_message_edit, safe_reply
 from bot.emoji_manager import em
 from bot.i18n import t
+from bot.cookie_policy import browser_headers, cookie_order, impersonate_target
 from bot.live_guard import format_duration, guard_message, info_is_live, probe_is_live
 from bot.pending import clear_user_pending
 from bot.ui import analyzing_text, unsupported_spotify_text
@@ -36,13 +37,6 @@ from bot.utils import (
 
 logger = logging.getLogger("downloader")
 
-_HTTP_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
-}
 
 # ─── HTML escaping ──────────────────────────────────────────────────────────
 
@@ -104,18 +98,29 @@ def _sync_extract_info(url: str, cookies_file: Path | None = None) -> dict:
         "no_warnings": True,
         "skip_download": True,
         "noplaylist": noplaylist,
-        "socket_timeout": 20,
-        "retries": 2,
-        "http_headers": _HTTP_HEADERS.copy(),
+        "socket_timeout": 15,
+        "retries": 1,
+        "http_headers": browser_headers(url),
     }
 
-    attempts = [True, False]  # with cookies / without
+    # Public content is asked for anonymously first; the session is the
+    # fallback. Besides being the safer request to make, it is the faster
+    # one — a cookie-authenticated metadata query measured roughly twice as
+    # slow on YouTube.
     last_exc: Exception | None = None
 
-    for use_cookies in attempts:
+    order = cookie_order(url, data_dir=cookies_file.parent if cookies_file else None)
+    # The last pass drops the impersonated handler, so a platform whose
+    # extractor dislikes the copied browser response still gets an answer.
+    plan = [(flag, True) for flag in order] + [(order[0], False)]
+
+    for use_cookies, impersonate in plan:
         opts = dict(base_opts)
         if use_cookies and cookies_file and cookies_file.exists():
             opts["cookiefile"] = str(cookies_file)
+        target = impersonate_target(url) if impersonate else None
+        if target is not None:
+            opts["impersonate"] = target
 
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -137,13 +142,15 @@ def _sync_extract_playlist(url: str, cookies_file: Path | None = None) -> dict:
         "skip_download": True,
         "noplaylist": False,
         "extract_flat": "in_playlist",
-        "socket_timeout": 20,
-        "retries": 2,
-        "http_headers": _HTTP_HEADERS.copy(),
+        "socket_timeout": 15,
+        "retries": 1,
+        "http_headers": browser_headers(url),
     }
 
     last_exc: Exception | None = None
-    for use_cookies in [True, False]:
+    for use_cookies in cookie_order(
+        url, data_dir=cookies_file.parent if cookies_file else None,
+    ):
         opts = dict(base_opts)
         if use_cookies and cookies_file and cookies_file.exists():
             opts["cookiefile"] = str(cookies_file)

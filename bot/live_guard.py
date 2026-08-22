@@ -12,6 +12,7 @@ Two parts:
   2) LiveGuard       — warnings and a temporary ban for repeat attempts
 """
 
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,25 @@ def info_is_live(info: dict[str, Any] | None) -> bool:
     return False
 
 
+# Link shapes that cannot be a livestream. A reel, a tweet or a pin is a
+# finished piece of media, so the probe below is a network round trip that
+# can only ever answer "no" — skipping it takes a second or two off every
+# social download.
+_NEVER_LIVE_PATTERNS = (
+    r"instagram\.com/(p|reel|reels|tv)/",
+    r"(twitter|x)\.com/[^/]+/status/",
+    r"pinterest\.[a-z.]+/pin/",
+    r"open\.spotify\.com/",
+    r"tiktok\.com/@[^/]+/(video|photo)/",
+)
+
+
+def can_be_live(url: str) -> bool:
+    """False when the link shape rules a livestream out."""
+    lowered = str(url or "").lower()
+    return not any(re.search(pattern, lowered) for pattern in _NEVER_LIVE_PATTERNS)
+
+
 def probe_is_live(
     url: str,
     *,
@@ -57,6 +77,9 @@ def probe_is_live(
     Returns (is_live, info). A failed query returns (False, {}) so uncertainty
     never blocks a download; normal error handling takes over.
     """
+    if not can_be_live(url):
+        return False, {}
+
     import yt_dlp
 
     opts: dict[str, Any] = {

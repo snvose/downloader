@@ -34,6 +34,9 @@ data/bot.db
 data/bot.db-wal
 data/bot.db-shm
 data/cookie_stats.json
+data/cookie_watch.json
+data/cookie_pref.json
+data/cookie_cooldown.json
 data/sources.json
 data/broadcasts.json
 

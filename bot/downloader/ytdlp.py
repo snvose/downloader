@@ -20,6 +20,16 @@ import yt_dlp
 from bot.downloader.metadata import apply_audio_metadata
 from bot.live_guard import info_is_live, probe_is_live
 from bot.queue_events import cookie_event, log_event, progress_event
+from bot.cookie_policy import (
+    CookieCooldown,
+    CookiePreference,
+    browser_headers,
+    cookie_order,
+    impersonate_target,
+    is_bot_check_error,
+    needs_cookies,
+    pacing,
+)
 from bot.utils import instagram_story_kind, platform_name
 
 
@@ -121,6 +131,7 @@ def _download_with_gallery_dl(
     download_dir: Path,
     cookies_file: Path | None,
     queue: Any,
+    use_cookies: bool = True,
 ) -> tuple[list[str], str, dict[str, Any]]:
     queue.put(log_event(job_id, "warning", "Trying the gallery-dl fallback."))
 
@@ -131,7 +142,15 @@ def _download_with_gallery_dl(
     # download slot — for over four minutes before failing anyway.
     cmd += ["--retries", "2", "--sleep-429", "5"]
 
-    if cookies_file and cookies_file.exists():
+    # The same browser identity yt-dlp uses, and a pause between requests:
+    # gallery-dl walks a post's files one by one, which is the request
+    # pattern platforms are quickest to score as scraping.
+    cmd += ["--user-agent", browser_headers(url)["User-Agent"]]
+    cmd += ["--sleep-request", "1"]
+
+    # The session is only handed over when the link actually needs it, or
+    # when the anonymous path has already failed here.
+    if cookies_file and cookies_file.exists() and use_cookies:
         cmd += ["--cookies", str(cookies_file)]
 
     cmd.append(url)
@@ -1125,6 +1144,27 @@ def _is_audience_gated_error(error: Exception) -> bool:
     )
 
 
+# Nothing about the request can change these answers: the content is gone,
+# or the link is not something yt-dlp handles. Retrying with a session only
+# adds a round trip and one more request on the platform's counter.
+_TERMINAL_MARKERS = (
+    "video unavailable",
+    "video is unavailable",
+    "removed by the uploader",
+    "has been removed",
+    "no longer exists",
+    "does not exist",
+    "account has been terminated",
+    "unsupported url",
+    "is not a valid url",
+)
+
+
+def _is_terminal_error(error: Exception) -> bool:
+    msg = str(error).lower()
+    return any(marker in msg for marker in _TERMINAL_MARKERS)
+
+
 def _should_retry_without_cookies(error: Exception) -> bool:
     msg = str(error).lower()
     markers = [
@@ -1252,6 +1292,7 @@ def _build_opts(
     use_cookies: bool,
     format_profile: str,
     subtitle_lang: str = "",
+    impersonate: bool = True,
 ) -> dict[str, Any]:
     opts: dict[str, Any] = {
         "quiet": True,
@@ -1264,11 +1305,11 @@ def _build_opts(
         "retries": 3,
         "fragment_retries": 5,
         "file_access_retries": 3,
-        "socket_timeout": 20,
-        "concurrent_fragment_downloads": 8,
-        "buffersize": 1024 * 64,
+        "socket_timeout": 15,
+        "concurrent_fragment_downloads": 16,
+        "buffersize": 1024 * 256,
         "http_chunk_size": 1024 * 1024 * 10,
-        "http_headers": HTTP_HEADERS.copy(),
+        "http_headers": browser_headers(url),
         "progress_hooks": [_make_hook(job_id, queue)],
         # ── Livestream / endless-stream protection ──
         # match_filter: live content never enters the download.
@@ -1283,6 +1324,17 @@ def _build_opts(
 
     if use_cookies and cookies_file and cookies_file.exists():
         opts["cookiefile"] = str(cookies_file)
+
+    # Copy Chrome's TLS handshake where the platform checks it. Kept as a
+    # preference, not a requirement: the plain handler is still tried later,
+    # so an extractor that dislikes the impersonated response is not a dead
+    # end.
+    if impersonate:
+        target = impersonate_target(url)
+        if target is not None:
+            opts["impersonate"] = target
+
+    opts.update(pacing(url))
 
     if shutil.which("ffmpeg"):
         opts["ffmpeg_location"] = shutil.which("ffmpeg")
@@ -1404,6 +1456,7 @@ def _try_ytdlp_once(
     use_cookies: bool,
     format_profile: str,
     subtitle_lang: str = "",
+    impersonate: bool = True,
 ) -> tuple[list[str], str, dict[str, Any]]:
     opts = _build_opts(
         job_id=job_id,
@@ -1415,6 +1468,7 @@ def _try_ytdlp_once(
         use_cookies=use_cookies,
         format_profile=format_profile,
         subtitle_lang=subtitle_lang,
+        impersonate=impersonate,
     )
 
     title = ""
@@ -1563,28 +1617,35 @@ def download_with_ytdlp(
                     cookies_file=cookies_file,
                 )
 
-    if _is_thumbnail_mode(mode):
-        attempts = [
-            ("cookies", True, "normal"),
-            ("cookieless", False, "normal"),
-        ]
-    elif _is_audio_mode(mode):
-        attempts = [
-            ("cookies", True, "normal"),
-            ("cookieless", False, "normal"),
-        ]
-    elif _is_social_url(url):
-        attempts = [
-            ("cookies", True, "normal"),
-            ("cookieless", False, "normal"),
-            ("cookies-loose", True, "loose"),
-            ("cookieless-loose", False, "loose"),
-        ]
-    else:
-        attempts = [
-            ("cookies", True, "normal"),
-            ("cookieless", False, "normal"),
-        ]
+    # ── Attempt plan ────────────────────────────────────────────────────────
+    # The order comes from the cookie policy, not from a fixed list: public
+    # content is fetched anonymously first, so the session is only spent
+    # where it is actually needed. A platform that just answered with a rate
+    # limit or a bot check stays anonymous for the whole cooldown.
+    data_dir = cookies_file.parent if cookies_file else Path("data")
+    cooldown = CookieCooldown(data_dir)
+    preference = CookiePreference(data_dir)
+    platform = platform_name(url)
+    order = cookie_order(url, data_dir=data_dir)
+
+    if cooldown.active(platform) and not needs_cookies(url):
+        queue.put(log_event(
+            job_id, "info",
+            f"{platform} recently rate-limited the session — staying logged out for now.",
+        ))
+        order = (False, True)
+
+    def _label(use_cookies: bool, suffix: str = "") -> str:
+        return ("cookies" if use_cookies else "cookieless") + suffix
+
+    # (label, use_cookies, format_profile, impersonate)
+    attempts = [(_label(flag), flag, "normal", True) for flag in order]
+
+    if _is_social_url(url) and not _is_thumbnail_mode(mode) and not _is_audio_mode(mode):
+        # The loose pass also drops the impersonated handler: if the copied
+        # TLS fingerprint is what the extractor choked on, this is the run
+        # that gets through.
+        attempts += [(_label(flag, "-loose"), flag, "loose", False) for flag in order]
 
     # ── Instagram: skip cookie-based attempts entirely on a locked session ──
     # On a checkpointed account, EVERY cookie-based request returns 400.
@@ -1639,10 +1700,10 @@ def download_with_ytdlp(
             if filtered:
                 attempts = filtered
 
-    for label, use_cookies, format_profile in attempts:
+    for label, use_cookies, format_profile, impersonate in attempts:
         try:
             queue.put(log_event(job_id, "info", f"yt-dlp attempt: {label}"))
-            return _try_ytdlp_once(
+            result = _try_ytdlp_once(
                 job_id=job_id,
                 url=url,
                 download_dir=download_dir,
@@ -1652,7 +1713,10 @@ def download_with_ytdlp(
                 use_cookies=use_cookies,
                 format_profile=format_profile,
                 subtitle_lang=subtitle_lang,
+                impersonate=impersonate,
             )
+            preference.record_success(platform, use_cookies)
+            return result
 
         except LiveStreamError:
             # Livestream: no point retrying, exit right away.
@@ -1663,6 +1727,18 @@ def download_with_ytdlp(
             message = short_error(exc)
             errors.append(f"{label}: {message}")
             queue.put(log_event(job_id, "warning", f"yt-dlp failed [{label}]: {message}"))
+
+            # A rate limit or a bot check is aimed at the account, not at
+            # this one request. Note it so the next jobs on this platform
+            # stay anonymous instead of walking the session into the wall.
+            if is_bot_check_error(message):
+                cooldown.mark(platform, message)
+                if use_cookies:
+                    queue.put(log_event(
+                        job_id, "warning",
+                        f"{platform} pushed back on the session — "
+                        f"cookie-based attempts paused for a while.",
+                    ))
 
             # "No video in this post" is not an access issue, it's the
             # content type: a photo/carousel post. Neither cookies nor the
@@ -1685,7 +1761,18 @@ def download_with_ytdlp(
                 ))
                 break
 
-            if not _should_retry_without_cookies(exc) and not _is_social_url(url):
+            if _is_terminal_error(exc):
+                queue.put(log_event(
+                    job_id, "info",
+                    "The content itself is unavailable — no other attempt can change that.",
+                ))
+                break
+
+            # A failed ANONYMOUS attempt is the normal case for walled
+            # content, and the session is the whole point of the next
+            # attempt, so it always gets its turn. The old rule only made
+            # sense while cookies went first.
+            if use_cookies and not _should_retry_without_cookies(exc) and not _is_social_url(url):
                 break
 
     if (
@@ -1701,6 +1788,10 @@ def download_with_ytdlp(
                 download_dir=download_dir,
                 cookies_file=cookies_file,
                 queue=queue,
+                # yt-dlp's anonymous attempts are already spent by now, so
+                # the session is worth handing over — unless the platform is
+                # in cooldown, where it is the one thing not to send.
+                use_cookies=needs_cookies(url) or not cooldown.active(platform),
             )
         except Exception as exc:
             errors.append(f"gallery-dl: {short_error(exc)}")
