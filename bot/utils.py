@@ -263,12 +263,18 @@ def safe_public_error(raw: str) -> str:
     # same message but this is the one the user needs to hear.
     if "checkpoint_required" in lowered or "challenge_required" in lowered:
         return t("err_ig_checkpoint")
+    # Restricted audience: checked before the access rules, which would call
+    # it "private" — the post is public, the viewer just isn't eligible. It
+    # also goes before the TikTok 403 rule, because the fallback's 403 is a
+    # symptom of this gate and reporting it hides the actual reason.
+    if (
+        "available to everyone" in lowered
+        or "certain audiences" in lowered
+        or "comfortable for some audiences" in lowered
+    ):
+        return t("err_restricted")
     if "tiktok" in lowered and ("403" in lowered or "forbidden" in lowered):
         return t("err_tiktok_403")
-    # Restricted audience: checked before the access rules, which would call
-    # it "private" — the post is public, the viewer just isn't eligible.
-    if "available to everyone" in lowered or "certain audiences" in lowered:
-        return t("err_restricted")
     # A text-only post: checked before the access rules, which would otherwise
     # blame a fallback's login error for a post that has nothing to download.
     if is_no_media_error(lowered):

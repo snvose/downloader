@@ -1130,17 +1130,20 @@ def _is_photo_only_error(error: Exception) -> bool:
 
 
 def _is_audience_gated_error(error: Exception) -> bool:
-    """Instagram's wording for content limited to certain viewers.
+    """The platform limits this post to certain viewers.
 
-    It is a gate on the *account* asking, not on the request: another cookie
-    profile or a looser format selector returns the exact same answer, so the
-    remaining attempts are pure rate-limit fuel.
+    It is a gate on the *account* asking, not on the request: once the
+    session has been tried, another cookie profile or a looser format
+    selector returns the exact same answer, so the remaining attempts are
+    pure rate-limit fuel.
     """
     msg = str(error).lower()
     return (
         "isn't available to everyone" in msg
         or "isn t available to everyone" in msg
         or "can't be seen by certain audiences" in msg
+        # TikTok's wording for its mature-content gate.
+        or "may not be comfortable for some audiences" in msg
     )
 
 
@@ -1329,10 +1332,15 @@ def _build_opts(
     # preference, not a requirement: the plain handler is still tried later,
     # so an extractor that dislikes the impersonated response is not a dead
     # end.
-    if impersonate:
-        target = impersonate_target(url)
-        if target is not None:
-            opts["impersonate"] = target
+    #
+    # The headers above stay on the request. Letting curl_cffi supply the
+    # impersonated browser's own set instead was measurably worse: TikTok
+    # answered those requests with a page the extractor could not read at
+    # all ("Unexpected response from webpage request") on every link tried,
+    # while the same links worked with these headers.
+    target = impersonate_target(url) if impersonate else None
+    if target is not None:
+        opts["impersonate"] = target
 
     opts.update(pacing(url))
 
@@ -1700,7 +1708,7 @@ def download_with_ytdlp(
             if filtered:
                 attempts = filtered
 
-    for label, use_cookies, format_profile, impersonate in attempts:
+    for index, (label, use_cookies, format_profile, impersonate) in enumerate(attempts):
         try:
             queue.put(log_event(job_id, "info", f"yt-dlp attempt: {label}"))
             result = _try_ytdlp_once(
@@ -1740,20 +1748,31 @@ def download_with_ytdlp(
                         f"cookie-based attempts paused for a while.",
                     ))
 
-            # "No video in this post" is not an access issue, it's the
-            # content type: a photo/carousel post. Neither cookies nor the
-            # format profile change the outcome — this used to run 4
-            # pointless attempts against Instagram photo posts, poking it
-            # every time. Go straight to gallery-dl, the only source that
-            # can fetch images.
+            # An audience gate answers the ACCOUNT, so once the session has
+            # had its turn the remaining attempts are pure rate-limit fuel.
+            # Before it has, the session is exactly what might get in — the
+            # anonymous attempt hitting this wall is the normal case.
             if _is_audience_gated_error(exc):
+                session_still_untried = not use_cookies and any(
+                    item[1] for item in attempts[index + 1:]
+                )
+                if not session_still_untried:
+                    queue.put(log_event(
+                        job_id, "info",
+                        f"{platform} limits this post to certain viewers — "
+                        "further attempts would return the same answer.",
+                    ))
+                    break
+
                 queue.put(log_event(
                     job_id, "info",
-                    "Instagram limits this post to certain viewers — "
-                    "further attempts would return the same answer.",
+                    "Limited to certain viewers — trying again with the session.",
                 ))
-                break
+                continue
 
+            # Not an access issue but the content type: a photo or carousel
+            # post. Neither cookies nor the format profile change that, so
+            # go straight to gallery-dl, the only source that fetches images.
             if _is_photo_only_error(exc):
                 queue.put(log_event(
                     job_id, "info",
