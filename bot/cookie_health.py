@@ -31,7 +31,7 @@ _COOKIE_ERROR_PATTERNS = [
      "account locked — verification required (refreshing cookies is not enough)"),
     (r"sign in to confirm", "sign-in confirmation requested"),
     (r"login required", "login required"),
-    (r"available to everyone|certain audiences",
+    (r"available to everyone|certain audiences|comfortable for some audiences",
      "content restricted to certain viewers — a logged-in session is needed"),
     (r"requested content is not available|content isn'?t available", "content hidden without a session"),
     (r"private (video|account|profile)", "private content"),
@@ -86,6 +86,40 @@ _OPTIONAL_COOKIE_PLATFORMS = {
 }
 
 EXPIRY_WARN_DAYS = 7
+
+# Cookies that are SUPPOSED to be short lived: a bot check token, the
+# browser window size, a tracking id. Warning that they expire soon said
+# "refresh your cookies" every single day about a session that was fine, so
+# the expiry warning looks at the cookies that carry the login instead.
+_EPHEMERAL_COOKIES = {
+    "__cf_bm", "wd", "dpr", "session_tracker", "csrf_token", "_dd_s",
+    "ttwid_expire", "tt_chain_token", "gads", "gpi",
+}
+
+
+def _session_expiry(
+    expiry_by_name: dict[str, int],
+    login_cookies: list[str],
+) -> int:
+    """
+    When does the login itself run out?
+
+    The login cookies decide when the platform names one; otherwise the
+    earliest expiry that isn't a throwaway cookie.
+    """
+    if login_cookies:
+        candidates = [
+            ts for name, ts in expiry_by_name.items()
+            if name in login_cookies and ts > 0
+        ]
+        if candidates:
+            return min(candidates)
+
+    candidates = [
+        ts for name, ts in expiry_by_name.items()
+        if ts > 0 and name not in _EPHEMERAL_COOKIES
+    ]
+    return min(candidates) if candidates else 0
 
 
 # A download can run through a different platform than the link's own
@@ -168,10 +202,16 @@ def parse_cookie_file(path: Path) -> dict[str, dict[str, Any]]:
 
         entry = result.setdefault(domain, {
             "count": 0, "expired": 0, "nearest_expiry": 0, "names": [],
+            "expiry_by_name": {},
         })
         entry["count"] += 1
         if name not in entry["names"]:
             entry["names"].append(name)
+        if expiry > 0:
+            current = entry["expiry_by_name"].get(name)
+            entry["expiry_by_name"][name] = (
+                expiry if current is None else min(current, expiry)
+            )
 
         if expiry > 0:
             if expiry < now:
@@ -203,11 +243,18 @@ def platform_cookie_status(
         names: list[str] = []
 
         # Subdomains count too (www.tiktok.com -> tiktok.com)
+        expiry_by_name: dict[str, int] = {}
+
         for domain, entry in domains.items():
             if any(domain == w or domain.endswith("." + w) for w in wanted):
                 if matched is None:
                     matched = {"count": 0, "expired": 0, "nearest_expiry": 0}
                 names.extend(entry["names"])
+                for cookie_name, ts in entry.get("expiry_by_name", {}).items():
+                    current = expiry_by_name.get(cookie_name)
+                    expiry_by_name[cookie_name] = (
+                        ts if current is None else min(current, ts)
+                    )
                 matched["count"] += entry["count"]
                 matched["expired"] += entry["expired"]
                 nearest = entry["nearest_expiry"]
@@ -234,10 +281,10 @@ def platform_cookie_status(
             })
             continue
 
-        nearest = matched["nearest_expiry"]
+        login_cookies = PLATFORM_LOGIN_COOKIES.get(platform, [])
+        nearest = _session_expiry(expiry_by_name, login_cookies) or matched["nearest_expiry"]
         days_left = int((nearest - now) / 86400) if nearest else None
 
-        login_cookies = PLATFORM_LOGIN_COOKIES.get(platform, [])
         logged_in = not login_cookies or any(name in names for name in login_cookies)
 
         if matched["expired"] and matched["expired"] >= matched["count"]:

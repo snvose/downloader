@@ -130,6 +130,10 @@ def _probe(platform: str, cookies_file: Path) -> tuple[str, str]:
     return "ok", "session recognised"
 
 
+# The states that mean a human has to do something.
+_BAD = {"expired", "logged_out", "checkpoint", "missing"}
+
+
 def run_check(config: Config) -> dict[str, Any]:
     """
     One full check. Synchronous — call it through asyncio.to_thread.
@@ -155,8 +159,12 @@ def run_check(config: Config) -> dict[str, Any]:
         name = row["platform"]
         file_status = row["status"]
 
+        # A platform with no cookies at all is not probed: the request would
+        # go out anonymous and come back "logged out", which is true and
+        # useless — for the optional platforms it would be a daily false
+        # alarm about a session nobody asked for.
         live_state, detail = ("unknown", "")
-        if file_status != "missing":
+        if row.get("count"):
             live_state, detail = _probe(name, Path(config.cookies_file))
 
         # The live answer wins when there is one: a file that looks perfect
@@ -173,6 +181,16 @@ def run_check(config: Config) -> dict[str, Any]:
         since = float(old.get("since", 0)) or now
         if old.get("status") != status:
             since = now
+
+        # A recovered platform starts clean. Otherwise the panel kept
+        # reporting "25 failed requests" from a session that was refreshed
+        # days ago, and the number the admin should react to was buried in
+        # a total that only ever grew.
+        if status == "ok" and old.get("status") in _BAD:
+            cookie_log.reset(name)
+            row["failures"] = 0
+            row["last_reason"] = ""
+            logger.info("Cookie watch: %s recovered, failure counter reset.", name)
 
         platforms[name] = {
             "status": status,
@@ -204,7 +222,6 @@ def read_state(data_dir: Path) -> dict[str, Any]:
     return state if isinstance(state, dict) else {}
 
 
-_BAD = {"expired", "logged_out", "checkpoint", "missing"}
 _ICONS = {
     "ok": "🟢", "expiring": "🟡", "expired": "🔴", "logged_out": "🟠",
     "checkpoint": "⛔", "missing": "⚪", "optional_missing": "⚪",

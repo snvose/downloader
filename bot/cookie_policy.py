@@ -137,19 +137,29 @@ def cookie_order(url: str, *, data_dir: Path | None = None) -> tuple[bool, ...]:
 
 # One family, several plausible machines. Chrome on Windows/macOS is the most
 # common thing a platform sees, so it is the least interesting thing to be.
+#
+# The Chrome VERSION is pinned rather than rotated, and it is not the newest
+# one on purpose. TikTok serves a different page per user agent version, and
+# yt-dlp's extractor can only read one of them: measured here, 139 works
+# while 138, 140 and 145 all come back as "Unexpected response from webpage
+# request" or "Unable to download webpage". Only the operating system
+# rotates, which every version handled identically.
+#
+# So when TikTok starts failing across the board after a yt-dlp upgrade,
+# this is the first thing to re-check.
+_CHROME_VERSION = "139"
+
 _USER_AGENTS = (
-    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-     "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36", '"Windows"', "139"),
-    ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-     "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36", '"macOS"', "139"),
-    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-     "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36", '"Windows"', "138"),
-    ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-     "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36", '"Linux"', "138"),
+    (f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+     f"(KHTML, like Gecko) Chrome/{_CHROME_VERSION}.0.0.0 Safari/537.36", '"Windows"'),
+    (f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+     f"(KHTML, like Gecko) Chrome/{_CHROME_VERSION}.0.0.0 Safari/537.36", '"macOS"'),
+    (f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+     f"(KHTML, like Gecko) Chrome/{_CHROME_VERSION}.0.0.0 Safari/537.36", '"Linux"'),
 )
 
 
-def _agent_for(platform: str) -> tuple[str, str, str]:
+def _agent_for(platform: str) -> tuple[str, str]:
     """Stable per platform per day: same browser all day, not a new one per request."""
     day = int(time.time() // 86400)
     digest = hashlib.sha256(f"{platform}:{day}".encode()).digest()
@@ -158,7 +168,8 @@ def _agent_for(platform: str) -> tuple[str, str, str]:
 
 def browser_headers(url: str) -> dict[str, str]:
     """A header set that matches the impersonated browser."""
-    agent, platform_hint, major = _agent_for(_platform(url))
+    agent, platform_hint = _agent_for(_platform(url))
+    major = _CHROME_VERSION
     return {
         "User-Agent": agent,
         "Accept": (
@@ -189,6 +200,35 @@ _IMPERSONATE_PLATFORMS = {
 }
 
 
+# Whether this install can actually impersonate anything. Asking yt-dlp
+# costs a handler probe, so it is asked once per process.
+_IMPERSONATION_AVAILABLE: bool | None = None
+
+
+def _impersonation_available(target: Any) -> bool:
+    """
+    Is the target really usable here?
+
+    Handing yt-dlp a target it cannot serve does not degrade — it raises
+    before the request is made, so an install without curl_cffi (or with a
+    version yt-dlp silently refuses, see requirements.txt) would fail every
+    social download instead of just losing the disguise.
+    """
+    global _IMPERSONATION_AVAILABLE
+
+    if _IMPERSONATION_AVAILABLE is None:
+        try:
+            import yt_dlp
+
+            with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+                available = [item[0] for item in ydl._get_available_impersonate_targets()]
+            _IMPERSONATION_AVAILABLE = any(target in candidate for candidate in available)
+        except Exception:
+            _IMPERSONATION_AVAILABLE = False
+
+    return _IMPERSONATION_AVAILABLE
+
+
 def impersonate_target(url: str) -> Any | None:
     """yt-dlp ImpersonateTarget for this link, or None when not applicable."""
     if _platform(url) not in _IMPERSONATE_PLATFORMS:
@@ -197,7 +237,9 @@ def impersonate_target(url: str) -> Any | None:
         from yt_dlp.networking.impersonate import ImpersonateTarget
     except Exception:
         return None
-    return ImpersonateTarget("chrome")
+
+    target = ImpersonateTarget("chrome")
+    return target if _impersonation_available(target) else None
 
 
 def pacing(url: str) -> dict[str, Any]:
