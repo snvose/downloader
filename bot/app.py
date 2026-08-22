@@ -57,6 +57,7 @@ from .db_migrate import migrate_json_to_db
 from .live_guard import LiveGuard, guard_message
 from .pending import expire_pending_jobs
 from .state import BotState
+from .cookie_watch import cookie_watch_scheduler
 from .scheduler import cleanup_scheduler
 from .download_log import log_download, log_download_error
 from .admin_notify import notify_admin_failure
@@ -530,6 +531,13 @@ async def post_init(app: Application) -> None:
         )
         logger.info("Cleanup scheduler started.")
 
+    # Hourly cookie check + one detailed report a day to the admin.
+    if config:
+        app.bot_data["cookie_watch_task"] = asyncio.create_task(
+            cookie_watch_scheduler(app.bot, config)
+        )
+        logger.info("Cookie watch started.")
+
     # Activity buffer: batches writes instead of hitting the DB on every message.
     buffer = app.bot_data.get("activity_buffer")
     if buffer:
@@ -538,7 +546,7 @@ async def post_init(app: Application) -> None:
 
 
 async def post_shutdown(app: Application) -> None:
-    for task_key in ("queue_task", "cleanup_task", "activity_task"):
+    for task_key in ("queue_task", "cleanup_task", "activity_task", "cookie_watch_task"):
         task = app.bot_data.get(task_key)
         if task:
             task.cancel()

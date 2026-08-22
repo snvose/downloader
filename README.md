@@ -65,6 +65,18 @@ for the full list with defaults.
 broadcast tools, ban management, cookie health, live logs, and premium emoji
 customization — all through inline buttons.
 
+## 🍪 Cookies
+
+Cookies are only sent when the content actually needs them — a public video
+downloads anonymously, which is both faster and far less likely to get the
+account flagged. When a platform answers with a rate limit or a bot check,
+requests there stay anonymous for a while instead of walking the session
+into the wall.
+
+The session itself is checked every hour, and the admin gets one detailed
+report on the days something needs refreshing: which platform, since when,
+how many downloads it cost, and which cookie to re-export.
+
 ## 🗣 Languages
 
 English, Türkçe, Русский, Deutsch, Español, Français, العربية — switchable

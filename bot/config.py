@@ -28,6 +28,7 @@ class Config:
     log_dir: Path
     cleanup_tz_offset: int        # UTC offset used for the daily cleanup clock
     cleanup_hour: int             # hour of day the cleanup runs
+    cookie_report_hour: int       # hour of day the cookie report is sent
     log_retention_days: int       # how long daily log files are kept
     cache_enabled: bool           # reuse file_id for links sent again
     show_links: bool              # show owner/community buttons in /start
@@ -115,6 +116,7 @@ def load_config() -> Config:
         log_dir=log_dir,
         cleanup_tz_offset=_env_int("CLEANUP_TZ_OFFSET", 0),
         cleanup_hour=_env_int("CLEANUP_HOUR", 0),
+        cookie_report_hour=_env_int("COOKIE_REPORT_HOUR", 11),
         log_retention_days=_env_int("LOG_RETENTION_DAYS", 7),
         cache_enabled=_env_bool("CACHE_ENABLED", True),
         show_links=_env_bool("SHOW_LINKS", False),

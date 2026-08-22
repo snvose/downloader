@@ -6,6 +6,7 @@ import logging
 import re
 import shutil
 import sys
+import time
 from datetime import datetime
 
 import yt_dlp
@@ -17,6 +18,8 @@ from bot.broadcast import BroadcastJob, run_broadcast, validate_html
 from bot.i18n import LANGUAGES, set_language
 from bot.live_guard import format_duration
 from bot.cookie_health import platform_cookie_status
+from bot.cookie_policy import CookieCooldown
+from bot.cookie_watch import read_state
 from bot.emoji_manager import broadcast_slots, em, render_slots
 from bot.pending import clear_all_pending
 from bot.safe_message import safe_reply
@@ -389,6 +392,7 @@ _COOKIE_STATUS_ICON = {
     "expired": "🔴",
     "missing": "🔴",
     "logged_out": "🟠",
+    "checkpoint": "⛔",
     "expiring": "🟠",
     "optional_missing": "⚪️",
     "ok": "🟢",
@@ -398,6 +402,7 @@ _COOKIE_STATUS_LABEL = {
     "expired": "EXPIRED",
     "missing": "MISSING",
     "logged_out": "NOT LOGGED IN",
+    "checkpoint": "ACCOUNT LOCKED",
     "expiring": "expiring soon",
     "optional_missing": "none (not required)",
     "ok": "valid",
@@ -417,6 +422,21 @@ def _cookie_text(context: ContextTypes.DEFAULT_TYPE) -> str:
 
     failures = cookie_log.failures() if cookie_log else {}
     rows = platform_cookie_status(cf, failures=failures)
+
+    # The hourly watch knows something the file cannot: whether the platform
+    # still recognises the session. Where it has an answer, it wins.
+    watch = read_state(config.data_dir)
+    watched = watch.get("platforms") or {}
+    for row in rows:
+        entry = watched.get(row["platform"])
+        if not isinstance(entry, dict):
+            continue
+        live = entry.get("live_state")
+        if live in {"logged_out", "checkpoint"}:
+            row["status"] = live
+            row["live_detail"] = str(entry.get("detail") or "")
+        elif live == "ok" and row["status"] == "logged_out":
+            row["status"] = "ok"
 
     lines = ["<b>🍪 Cookie Status</b>", ""]
 
@@ -457,8 +477,16 @@ def _cookie_text(context: ContextTypes.DEFAULT_TYPE) -> str:
 
         if row["status"] == "logged_out":
             parts.append(
-                "   <i>cookies present but no session cookie — "
-                "re-export from a logged-in browser</i>"
+                "   <i>"
+                + (_esc(row.get("live_detail")) + " — " if row.get("live_detail") else
+                   "cookies present but no session cookie — ")
+                + "re-export from a logged-in browser</i>"
+            )
+
+        if row["status"] == "checkpoint":
+            parts.append(
+                "   <i>the account is waiting for verification — "
+                "re-exporting the cookie alone will not fix it</i>"
             )
 
         if row["failures"]:
@@ -476,6 +504,24 @@ def _cookie_text(context: ContextTypes.DEFAULT_TYPE) -> str:
         lines.append(f"👉 <b>Needs refreshing:</b> {names}")
     else:
         lines.append("✅ Every platform's cookies are valid.")
+
+    checked = watch.get("checked")
+    if checked:
+        lines.append(
+            f"\n🕒 <i>Last live check: "
+            f"{time.strftime('%H:%M', time.localtime(checked))} — hourly. "
+            f"A detailed report is sent once a day.</i>"
+        )
+
+    cooldowns = CookieCooldown(config.data_dir).entries()
+    if cooldowns:
+        names = ", ".join(
+            f"{name} ({max(0, int(float(e.get('until', 0)) - time.time()) // 60)} min)"
+            for name, e in cooldowns.items()
+        )
+        lines.append(
+            f"🧊 <i>Rate limited, requests kept anonymous: {names}</i>"
+        )
 
     total_fail = cookie_log.total() if cookie_log else 0
     if total_fail:
